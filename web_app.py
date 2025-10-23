@@ -7,12 +7,14 @@ A modern web interface for processing SpiderFoot CSV exports,
 generating visualizations, and creating PDF reports.
 """
 
+import importlib
 import os
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
+from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
-from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
 
 # Add processor to path
 sys.path.insert(0, os.path.dirname(__file__))
@@ -70,7 +72,7 @@ def upload_file():
 
         # Import and validate CSV
         importer = SpiderFootCSVImporter()
-        result = importer.load_csv(str(filepath))
+        importer.load_csv(str(filepath))
 
         # Return summary data
         summary = importer.get_summary()
@@ -165,7 +167,12 @@ def generate_report():
         report_dir = app.config['REPORTS_FOLDER'] / timestamp
         report_dir.mkdir(exist_ok=True)
 
-        generator = ReportGenerator(analysis, str(report_dir))
+        generator = ReportGenerator(
+            analysis,
+            str(report_dir),
+            source_records=result['data'],
+            enable_llm=True
+        )
 
         generated_files = {}
 
@@ -189,10 +196,18 @@ def generate_report():
         json_path = generator.export_json_report()
         generated_files['json'] = str(Path(json_path).name)
 
+        # AI narrative artefacts (optional)
+        ai_payload = None
+        llm_markdown = generator.export_llm_markdown()
+        if llm_markdown:
+            generated_files['llm_markdown'] = str(Path(llm_markdown).name)
+            ai_payload = generator.get_llm_report_payload()
+
         return jsonify({
             'success': True,
             'report_id': timestamp,
-            'files': generated_files
+            'files': generated_files,
+            'ai_report': ai_payload
         })
 
     except Exception as e:
@@ -228,18 +243,11 @@ def health():
 
 
 if __name__ == '__main__':
-    # Check for required dependencies
+    # Check for required optional dependencies without importing heavy modules
     missing_deps = []
-
-    try:
-        import matplotlib
-    except ImportError:
-        missing_deps.append('matplotlib')
-
-    try:
-        import reportlab
-    except ImportError:
-        missing_deps.append('reportlab')
+    for dep in ('matplotlib', 'reportlab'):
+        if importlib.util.find_spec(dep) is None:  # type: ignore[attr-defined]
+            missing_deps.append(dep)
 
     if missing_deps:
         print("\n⚠️  Warning: Optional dependencies missing:")
@@ -252,7 +260,7 @@ if __name__ == '__main__':
     print("SpiderFoot TOC/Corruption Web Application")
     print("=" * 70)
     print("\nStarting server...")
-    print(f"Access the web interface at: http://localhost:5000")
+    print("Access the web interface at: http://localhost:5000")
     print("\nPress Ctrl+C to stop the server")
     print("=" * 70)
 

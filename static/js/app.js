@@ -1,10 +1,13 @@
 // SpiderFoot TOC/Corruption Analyzer - JavaScript
 
+const RECORD_RENDER_LIMIT = 1000;
+
 let currentFilename = null;
 let currentAnalysis = null;
+let currentAiReport = null;
 
 // Initialize app
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', () => {
     setupUploadZone();
     setupFileInput();
 });
@@ -34,6 +37,7 @@ function setupUploadZone() {
 }
 
 // Setup file input
+
 function setupFileInput() {
     const fileInput = document.getElementById('fileInput');
     fileInput.addEventListener('change', (e) => {
@@ -66,6 +70,8 @@ async function handleFileUpload(file) {
 
         if (response.ok) {
             currentFilename = result.filename;
+            currentAnalysis = null;
+            currentAiReport = null;
             showProgress(100);
             hideLoading();
             displaySummary(result.summary);
@@ -95,9 +101,10 @@ function displaySummary(summary) {
     stats.forEach(stat => {
         const statCard = document.createElement('div');
         statCard.className = 'stat-card';
+        const displayValue = Number.isFinite(stat.value) ? Number(stat.value).toLocaleString() : '0';
         statCard.innerHTML = `
             <div class="stat-label"><i class="fas ${stat.icon}"></i> ${stat.label}</div>
-            <div class="stat-value">${stat.value.toLocaleString()}</div>
+            <div class="stat-value">${displayValue}</div>
         `;
         statsGrid.appendChild(statCard);
     });
@@ -156,6 +163,7 @@ function displayAnalysis(analysis) {
     displayModulesTab(analysis.module_activity);
     displayCorruptionTab(analysis.corruption_patterns);
     displayThreatsTab(analysis.toc_patterns);
+    displayPivotsTab(analysis.pivots_and_leads || []);
     displayRecommendationsTab(analysis.recommendations);
 }
 
@@ -368,6 +376,125 @@ async function generateReport() {
     showLoading('Generating reports... This may take a moment.');
 
     try {
+
+    function createPivotCard(pivot, originLabel = null) {
+        const card = document.createElement('div');
+        card.className = 'pivot-card';
+
+        const header = document.createElement('div');
+        header.className = 'pivot-header';
+
+        const category = document.createElement('span');
+        category.className = 'pivot-category';
+        category.textContent = pivot.category || originLabel || 'Lead';
+        header.appendChild(category);
+
+        const confidence = document.createElement('span');
+        const confidenceValue = (pivot.confidence || 'unknown').toLowerCase();
+        confidence.className = `pivot-confidence ${confidenceValue}`;
+        confidence.textContent = pivot.confidence || 'Unknown';
+        header.appendChild(confidence);
+
+        card.appendChild(header);
+
+        if (originLabel) {
+            const origin = document.createElement('span');
+            origin.className = 'pivot-origin';
+            origin.textContent = originLabel;
+            card.appendChild(origin);
+        }
+
+        const title = document.createElement('h4');
+        title.textContent = pivot.title || pivot.indicator || 'Investigative Lead';
+        card.appendChild(title);
+
+        if (pivot.summary) {
+            const summary = document.createElement('p');
+            summary.className = 'pivot-summary';
+            summary.textContent = pivot.summary;
+            card.appendChild(summary);
+        }
+
+        if (pivot.rationale) {
+            const rationale = document.createElement('p');
+            rationale.className = 'pivot-rationale';
+            rationale.innerHTML = `<strong>Why it matters:</strong> ${pivot.rationale}`;
+            card.appendChild(rationale);
+        }
+
+        const recommendation = pivot.recommended_actions || pivot.recommended_action;
+        if (recommendation) {
+            const actions = document.createElement('p');
+            actions.className = 'pivot-actions';
+            actions.innerHTML = `<strong>Next Steps:</strong> ${recommendation}`;
+            card.appendChild(actions);
+        }
+
+        const evidence = pivot.supporting_evidence || [];
+        if (Array.isArray(evidence) && evidence.length > 0) {
+            const evidenceEl = document.createElement('p');
+            evidenceEl.className = 'pivot-evidence';
+            evidenceEl.innerHTML = `<strong>Supporting Evidence:</strong> ${evidence.slice(0, 5).join('; ')}`;
+            card.appendChild(evidenceEl);
+        }
+
+        if (pivot.metrics && Object.keys(pivot.metrics).length > 0) {
+            const metrics = document.createElement('p');
+            metrics.className = 'pivot-metrics';
+            const formatted = Object.entries(pivot.metrics)
+                .map(([key, value]) => `${key}: ${value}`)
+                .join(' • ');
+            metrics.innerHTML = `<strong>Metrics:</strong> ${formatted}`;
+                    currentAiReport = result.ai_report || null;
+                    if (currentAiReport) {
+                        showToast('AI narrative generated. Markdown download available.', 'info');
+                        if (currentAnalysis) {
+                            displayPivotsTab(currentAnalysis.pivots_and_leads || []);
+                            displayRecommendationsTab(currentAnalysis.recommendations || []);
+                        }
+                    }
+            card.appendChild(metrics);
+        }
+
+        return card;
+    }
+
+    function displayPivotsTab(pivots) {
+        const tab = document.getElementById('pivotsTab');
+        tab.innerHTML = '<h3>Investigative Pivots & Leads</h3>';
+
+        let hasContent = false;
+
+        if (Array.isArray(pivots) && pivots.length > 0) {
+            const sectionHeading = document.createElement('h4');
+            sectionHeading.textContent = 'Analytical Surface Leads';
+            tab.appendChild(sectionHeading);
+
+            pivots.forEach(pivot => {
+                tab.appendChild(createPivotCard(pivot, 'Analysis Engine'));
+            });
+            hasContent = true;
+        }
+
+        const aiPivots = currentAiReport && Array.isArray(currentAiReport.pivots_and_leads)
+            ? currentAiReport.pivots_and_leads
+            : [];
+
+        if (aiPivots.length > 0) {
+            const sectionHeading = document.createElement('h4');
+            sectionHeading.textContent = 'AI-Identified Strategic Leads';
+            tab.appendChild(sectionHeading);
+
+            aiPivots.forEach(pivot => {
+                tab.appendChild(createPivotCard(pivot, 'AI Narrative'));
+            });
+            hasContent = true;
+        }
+
+        if (!hasContent) {
+            tab.innerHTML += '<p>No pivots or investigative leads identified yet.</p>';
+        }
+    }
         const response = await fetch('/generate_report', {
             method: 'POST',
             headers: {
@@ -383,6 +510,19 @@ async function generateReport() {
 
         if (response.ok) {
             hideLoading();
+
+        if (currentAiReport && Array.isArray(currentAiReport.recommendations) && currentAiReport.recommendations.length > 0) {
+            const divider = document.createElement('h4');
+            divider.textContent = 'AI-Generated Strategic Recommendations';
+            tab.appendChild(divider);
+
+            currentAiReport.recommendations.forEach(rec => {
+                const item = document.createElement('div');
+                item.className = 'recommendation-item';
+                item.textContent = rec;
+                tab.appendChild(item);
+            });
+        }
             displayDownloads(result.report_id, result.files);
             showToast('Reports generated successfully!', 'success');
         } else {

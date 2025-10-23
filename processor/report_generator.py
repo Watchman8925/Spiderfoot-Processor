@@ -35,22 +35,50 @@ try:
 except ImportError:
     HAS_REPORTLAB = False
 
+try:
+    from processor.llm_client import (
+        LLMReportBuilder,
+        LLMReportError,
+        LLMReportResult,
+    )
+    HAS_LLM = True
+except ImportError:  # Optional dependency
+    LLMReportBuilder = None  # type: ignore
+    LLMReportError = None  # type: ignore
+    LLMReportResult = None  # type: ignore
+    HAS_LLM = False
+
 
 class ReportGenerator:
     """Generate visual reports and PDF documents from SpiderFoot analysis."""
 
-    def __init__(self, analysis_data: Dict[str, Any], output_dir: str = "./reports"):
+    def __init__(
+        self,
+        analysis_data: Dict[str, Any],
+        output_dir: str = "./reports",
+        source_records: Optional[List[Dict[str, Any]]] = None,
+        enable_llm: bool = True
+    ):
         """
         Initialize the report generator.
 
         Args:
             analysis_data: Analysis results from SpiderFootAnalyzer
             output_dir: Directory to save reports (default: ./reports)
+            source_records: Optional raw records to enrich AI narratives
+            enable_llm: Whether to attempt LLM-assisted reporting
         """
         self.analysis_data = analysis_data
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.charts = []
+        self.source_records = source_records or []
+        self.enable_llm = enable_llm
+        self._llm_builder = None
+        self._llm_report = None
+        self._llm_markdown_path = None
+        self._llm_attempted = False
+        self._llm_error = None
 
     def generate_event_distribution_chart(self, output_path: Optional[str] = None) -> str:
         """
@@ -239,6 +267,152 @@ class ReportGenerator:
 
         return charts
 
+    def _ensure_llm_builder(self) -> Optional[Any]:
+        """Initialise the LLM builder if configuration and dependencies permit."""
+        if not self.enable_llm or not HAS_LLM:
+            return None
+        if self._llm_builder is not None:
+            return self._llm_builder
+        if self._llm_error:
+            return None
+        try:
+            self._llm_builder = LLMReportBuilder.from_environment()
+        except LLMReportError as exc:
+            self._llm_error = str(exc)
+            self.enable_llm = False
+            print(f"  ! LLM reporting disabled: {exc}")
+            self._llm_builder = None
+        return self._llm_builder
+
+    def _maybe_generate_llm_report(self) -> Optional[Any]:
+        """Generate or retrieve a cached LLM narrative."""
+        if self._llm_report is not None or self._llm_attempted:
+            return self._llm_report
+
+        self._llm_attempted = True
+
+        builder = self._ensure_llm_builder()
+        if builder is None:
+            return None
+
+        try:
+            self._llm_report = builder.generate_report(self.analysis_data, self.source_records)
+        except LLMReportError as exc:
+            self._llm_error = str(exc)
+            print(f"  ! AI narrative skipped: {exc}")
+            self._llm_report = None
+        except Exception as exc:
+            self._llm_error = str(exc)
+            print(f"  ! Unexpected error generating AI narrative: {exc}")
+            self._llm_report = None
+
+        return self._llm_report
+
+    def _split_into_paragraphs(self, text: str) -> List[str]:
+        """Split long-form text into digestible paragraphs for PDF layout."""
+        if not text:
+            return []
+        normalized = text.replace('\r\n', '\n')
+        blocks = [block.strip() for block in normalized.split('\n\n') if block.strip()]
+        if not blocks:
+            blocks = [normalized.strip()]
+        return blocks
+
+    def _build_llm_narrative_elements(
+        self,
+    llm_report: Any,
+        body_style,
+        section_heading_style
+    ) -> List[Any]:
+        """Convert LLM narrative into reportlab flowables."""
+        elements: List[Any] = []
+
+        elements.append(Paragraph("AI-Generated Executive Summary", section_heading_style))
+        for paragraph in self._split_into_paragraphs(llm_report.executive_summary):
+            elements.append(Paragraph(paragraph, body_style))
+            elements.append(Spacer(1, 0.15*inch))
+
+        if llm_report.narrative_sections:
+            elements.append(Paragraph("Narrative Sections", section_heading_style))
+            for idx, section in enumerate(llm_report.narrative_sections, start=1):
+                title = section.get('title') or f"Section {idx}"
+                elements.append(Paragraph(f"{idx}. {title}", section_heading_style))
+                content = section.get('content') or section.get('body') or ''
+                for paragraph in self._split_into_paragraphs(content):
+                    elements.append(Paragraph(paragraph, body_style))
+                    elements.append(Spacer(1, 0.12*inch))
+
+        return elements
+
+    def _build_pivots_section(
+        self,
+        pivots: List[Dict[str, Any]],
+        body_style,
+        section_heading_style,
+        title: str = "Investigative Pivots & Leads"
+    ) -> List[Any]:
+        """Render pivots/leads into structured PDF content."""
+        if not pivots:
+            return []
+
+        elements: List[Any] = [Paragraph(title, section_heading_style)]
+
+        for pivot in pivots:
+            name = pivot.get('title') or pivot.get('indicator') or 'Lead'
+            confidence = pivot.get('confidence', 'Not rated')
+            header = f"<b>{name}</b> — Confidence: {confidence}"
+            elements.append(Paragraph(header, body_style))
+
+            summary = pivot.get('summary') or ''
+            for paragraph in self._split_into_paragraphs(summary):
+                elements.append(Paragraph(paragraph, body_style))
+
+            rationale = pivot.get('rationale') or ''
+            if rationale and rationale != summary:
+                elements.append(Paragraph(f"Rationale: {rationale}", body_style))
+
+            recommendation = pivot.get('recommended_actions') or pivot.get('recommended_action')
+            if recommendation:
+                elements.append(Paragraph(f"Recommended Actions: {recommendation}", body_style))
+
+            evidence = pivot.get('supporting_evidence') or []
+            if evidence:
+                evidence_text = '; '.join(evidence[:5])
+                elements.append(Paragraph(f"Supporting Evidence: {evidence_text}", body_style))
+
+            metrics = pivot.get('metrics') or {}
+            if metrics:
+                metric_pairs = ', '.join(f"{key}: {value}" for key, value in metrics.items())
+                elements.append(Paragraph(f"Metrics: {metric_pairs}", body_style))
+
+            elements.append(Spacer(1, 0.18*inch))
+
+        return elements
+
+    def export_llm_markdown(self, output_path: Optional[str] = None) -> Optional[str]:
+        """Persist the LLM narrative as Markdown, if available."""
+        llm_report = self._maybe_generate_llm_report()
+        if not llm_report:
+            return None
+
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = self.output_dir / f"llm_narrative_{timestamp}.md"
+        else:
+            output_path = Path(output_path)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(llm_report.to_markdown(), encoding='utf-8')
+        self._llm_markdown_path = str(output_path)
+        return self._llm_markdown_path
+
+    def get_llm_report_payload(self) -> Optional[Dict[str, Any]]:
+        """Return the cached LLM report as a serialisable dictionary."""
+        llm_report = self._maybe_generate_llm_report()
+        if llm_report:
+            return llm_report.to_dict()
+        return None
+
     def generate_pdf_report(self, output_path: Optional[str] = None,
                            title: str = "SpiderFoot TOC/Corruption Analysis Report") -> str:
         """
@@ -258,6 +432,9 @@ class ReportGenerator:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_path = self.output_dir / f"report_{timestamp}.pdf"
 
+        # Attempt to prepare AI narrative (non-blocking on failure)
+        llm_report = self._maybe_generate_llm_report()
+
         # Generate charts first
         chart_paths = self.generate_all_charts()
 
@@ -271,7 +448,7 @@ class ReportGenerator:
             'CustomTitle',
             parent=styles['Heading1'],
             fontSize=24,
-            textColor=colors.HexColor('#2c3e50'),
+            textColor=colors.HexColor('#0f172a'),
             spaceAfter=30,
             alignment=TA_CENTER
         )
@@ -280,10 +457,30 @@ class ReportGenerator:
             'CustomHeading',
             parent=styles['Heading2'],
             fontSize=16,
-            textColor=colors.HexColor('#34495e'),
+            textColor=colors.HexColor('#0ea5e9'),
             spaceAfter=12,
             spaceBefore=12
         )
+
+        body_style = ParagraphStyle(
+            'CustomBody',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=14,
+            spaceAfter=6
+        )
+
+        narrative_heading_style = ParagraphStyle(
+            'NarrativeHeading',
+            parent=styles['Heading3'],
+            fontSize=13,
+            textColor=colors.HexColor('#1e293b'),
+            spaceBefore=10,
+            spaceAfter=6
+        )
+
+        accent_header_color = colors.HexColor('#0f172a')
+        accent_body_color = colors.HexColor('#d1fae5')
 
         # Title page
         story.append(Paragraph(title, title_style))
@@ -304,13 +501,13 @@ class ReportGenerator:
         if summary_data:
             summary_table = Table(summary_data, colWidths=[3*inch, 2*inch])
             summary_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('BACKGROUND', (0, 0), (-1, 0), accent_header_color),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 12),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('BACKGROUND', (0, 1), (-1, -1), accent_body_color),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black)
             ]))
             story.append(summary_table)
@@ -332,12 +529,33 @@ class ReportGenerator:
 
         # Detailed findings
         story.append(Paragraph("Detailed Findings", heading_style))
-        story.append(self._generate_findings_content(styles))
+
+        if llm_report:
+            story.extend(self._build_llm_narrative_elements(llm_report, body_style, narrative_heading_style))
+        else:
+            story.append(self._generate_findings_content(styles))
+
+        # Deterministic pivots from analysis
+        pivots = self.analysis_data.get('pivots_and_leads', [])
+        story.extend(self._build_pivots_section(pivots[:10], body_style, narrative_heading_style,
+                                                title="Analytical Pivots & Leads"))
+
+        # AI pivot enrichment
+        if llm_report and llm_report.pivots_and_leads:
+            ai_pivots = [lead.to_dict() for lead in llm_report.pivots_and_leads]
+            story.extend(self._build_pivots_section(ai_pivots[:10], body_style, narrative_heading_style,
+                                                    title="AI-Identified Strategic Leads"))
 
         # Recommendations
         story.append(PageBreak())
         story.append(Paragraph("Recommendations", heading_style))
         story.append(self._generate_recommendations_content(styles))
+
+        if llm_report and llm_report.recommendations:
+            story.append(Paragraph("AI Strategic Recommendations", narrative_heading_style))
+            for recommendation in llm_report.recommendations:
+                story.append(Paragraph(f"• {recommendation}", body_style))
+            story.append(Spacer(1, 0.2*inch))
 
         # Build PDF
         doc.build(story)
@@ -431,7 +649,9 @@ class ReportGenerator:
 
 
 def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports",
-                   generate_pdf: bool = True, generate_charts: bool = True) -> Dict[str, str]:
+                   generate_pdf: bool = True, generate_charts: bool = True,
+                   source_records: Optional[List[Dict[str, Any]]] = None,
+                   enable_llm: bool = True) -> Dict[str, Any]:
     """
     Convenience function to generate reports.
 
@@ -440,11 +660,18 @@ def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports"
         output_dir: Directory to save reports
         generate_pdf: Whether to generate PDF report
         generate_charts: Whether to generate charts
+        source_records: Optional raw records for richer AI narratives
+        enable_llm: Whether to attempt LLM-assisted reporting
 
     Returns:
-        Dictionary with paths to generated files
+        Dictionary with generated artefact paths and optional AI payload
     """
-    generator = ReportGenerator(analysis_data, output_dir)
+    generator = ReportGenerator(
+        analysis_data,
+        output_dir,
+        source_records=source_records,
+        enable_llm=enable_llm
+    )
     results = {}
 
     if generate_charts:
@@ -466,5 +693,13 @@ def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports"
     # Always generate JSON
     json_path = generator.export_json_report()
     results['json'] = json_path
+
+    if enable_llm:
+        llm_markdown = generator.export_llm_markdown()
+        if llm_markdown:
+            results['llm_markdown'] = llm_markdown
+        llm_payload = generator.get_llm_report_payload()
+        if llm_payload:
+            results['llm_report'] = llm_payload
 
     return results

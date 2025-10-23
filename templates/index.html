@@ -83,22 +83,28 @@
                         <div class="threat-overview" id="threatOverview">
                             <!-- Threat cards will be populated here -->
                         </div>
+                        <div class="threat-details" id="threatDetails">
+                            <p>Select a category above to view detailed findings.</p>
+                        </div>
 
                         <!-- Detailed Analysis Tabs -->
                         <div class="tabs">
-                            <button class="tab-button active" onclick="showTab('events')">
+                            <button class="tab-button active" onclick="showTab('events', event)">
                                 <i class="fas fa-list"></i> Events
                             </button>
-                            <button class="tab-button" onclick="showTab('modules')">
+                            <button class="tab-button" onclick="showTab('modules', event)">
                                 <i class="fas fa-puzzle-piece"></i> Modules
                             </button>
-                            <button class="tab-button" onclick="showTab('corruption')">
+                            <button class="tab-button" onclick="showTab('corruption', event)">
                                 <i class="fas fa-exclamation-triangle"></i> Corruption
                             </button>
-                            <button class="tab-button" onclick="showTab('threats')">
+                            <button class="tab-button" onclick="showTab('threats', event)">
                                 <i class="fas fa-shield-alt"></i> Threats
                             </button>
-                            <button class="tab-button" onclick="showTab('recommendations')">
+                            <button class="tab-button" onclick="showTab('pivots', event)">
+                                <i class="fas fa-compass"></i> Pivots & Leads
+                            </button>
+                            <button class="tab-button" onclick="showTab('recommendations', event)">
                                 <i class="fas fa-lightbulb"></i> Recommendations
                             </button>
                         </div>
@@ -108,6 +114,7 @@
                             <div id="modulesTab" class="tab-pane"></div>
                             <div id="corruptionTab" class="tab-pane"></div>
                             <div id="threatsTab" class="tab-pane"></div>
+                            <div id="pivotsTab" class="tab-pane"></div>
                             <div id="recommendationsTab" class="tab-pane"></div>
                         </div>
 

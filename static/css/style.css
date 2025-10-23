@@ -1,19 +1,21 @@
 /* Modern Dark Theme for SpiderFoot Analyzer */
 
 :root {
-    --bg-primary: #0f1419;
-    --bg-secondary: #1a1f2e;
-    --bg-card: #1e2433;
-    --bg-hover: #2a3142;
-    --border-color: #2d3748;
-    --text-primary: #e2e8f0;
-    --text-secondary: #a0aec0;
-    --accent-primary: #667eea;
-    --accent-secondary: #764ba2;
-    --success: #48bb78;
-    --warning: #ed8936;
-    --danger: #f56565;
-    --info: #4299e1;
+    --bg-primary: #021836;
+    --bg-secondary: #06233f;
+    --bg-card: #0b2e4f;
+    --bg-hover: #123a5c;
+    --border-color: #15406a;
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5f5;
+    --accent-primary: #0ea5e9;
+    --accent-secondary: #2dd4bf;
+    --accent-tertiary: #fb6a4a;
+    --success: #2dd4bf;
+    --warning: #fb923c;
+    --danger: #fb6a4a;
+    --info: #38bdf8;
+    --muted: #1c4a6e;
 }
 
 * {
@@ -41,9 +43,9 @@ body {
     text-align: center;
     padding: 40px 20px;
     margin-bottom: 40px;
-    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 45%, var(--accent-tertiary) 100%);
     border-radius: 20px;
-    box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
+    box-shadow: 0 12px 45px rgba(14, 165, 233, 0.35);
 }
 
 .logo {
@@ -92,7 +94,7 @@ body {
 }
 
 .card-header {
-    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 70%);
     padding: 20px 30px;
     display: flex;
     align-items: center;
@@ -124,12 +126,12 @@ body {
 
 .upload-zone:hover {
     border-color: var(--accent-primary);
-    background: rgba(102, 126, 234, 0.05);
+    background: rgba(14, 165, 233, 0.08);
 }
 
 .upload-zone.drag-over {
     border-color: var(--success);
-    background: rgba(72, 187, 120, 0.1);
+    background: rgba(45, 212, 191, 0.12);
 }
 
 .upload-icon {
@@ -172,7 +174,7 @@ body {
 
 .progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+    background: linear-gradient(90deg, var(--accent-primary) 0%, var(--accent-secondary) 60%, var(--accent-tertiary) 100%);
     border-radius: 15px;
     transition: width 0.3s ease;
     width: 0%;
@@ -203,7 +205,7 @@ body {
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+    background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 70%, var(--accent-tertiary) 100%);
     color: white;
 }
 
@@ -591,4 +593,90 @@ body {
 .recommendation-item:before {
     content: "💡 ";
     margin-right: 10px;
+}
+
+/* Pivot & Leads */
+.pivot-card {
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    border-left: 4px solid var(--accent-secondary);
+    padding: 20px;
+    margin-bottom: 18px;
+    box-shadow: 0 6px 20px rgba(9, 146, 196, 0.18);
+    transition: transform 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
+}
+
+.pivot-card:hover {
+    background: var(--bg-hover);
+    transform: translateY(-3px);
+    box-shadow: 0 10px 28px rgba(9, 146, 196, 0.28);
+}
+
+.pivot-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.pivot-category {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent-secondary);
+}
+
+.pivot-origin {
+    display: inline-block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.pivot-confidence {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.pivot-confidence.high {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.pivot-confidence.medium {
+    border-color: var(--warning);
+    color: var(--warning);
+}
+
+.pivot-confidence.low {
+    border-color: var(--text-secondary);
+    color: var(--text-secondary);
+}
+
+.pivot-card h4 {
+    margin-bottom: 10px;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+}
+
+.pivot-summary,
+.pivot-rationale,
+.pivot-actions,
+.pivot-evidence,
+.pivot-metrics {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.pivot-actions strong,
+.pivot-rationale strong,
+.pivot-evidence strong {
+    color: var(--accent-primary);
 }
