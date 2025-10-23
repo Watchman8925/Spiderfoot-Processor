@@ -1,0 +1,76 @@
+# SpiderFoot TOC/Corruption Plugin Pack Configuration
+# This file contains default configuration options for the plugin pack
+
+plugin_settings:
+  sfp_toc_corruption:
+    enabled: true
+    
+    # Corruption detection keywords
+    corruption_keywords:
+      - fraud
+      - bribery
+      - corruption
+      - embezzlement
+      - kickback
+      - money laundering
+      - extortion
+      - graft
+      - racketeering
+      - misappropriation
+    
+    # Threat of Compromise keywords
+    toc_keywords:
+      - breach
+      - compromise
+      - leaked
+      - exposed
+      - hacked
+      - stolen
+      - malware
+      - ransomware
+      - backdoor
+      - vulnerability
+      - exploit
+      - trojan
+      - phishing
+    
+    # Data source checks
+    check_emails: true
+    check_domains: true
+    check_ips: true
+    
+    # Detection sensitivity
+    # Options: low, medium, high
+    # - low: Only report high-confidence findings
+    # - medium: Balance between false positives and detection (recommended)
+    # - high: Report all potential indicators (may have more false positives)
+    sensitivity: medium
+    
+    # Advanced options
+    advanced:
+      # Minimum keyword matches before reporting
+      min_keyword_matches: 1
+      
+      # Enable context analysis (slower but more accurate)
+      context_analysis: false
+      
+      # Cache results to avoid duplicate processing
+      enable_caching: true
+      
+      # Maximum cache size (number of entries)
+      max_cache_size: 10000
+
+# Reputation data sources (optional integrations)
+reputation_sources:
+  # Add your own threat intelligence feeds here
+  # Example:
+  # custom_feed:
+  #   enabled: false
+  #   url: "https://example.com/feed"
+  #   api_key: "your_api_key_here"
+
+# Logging configuration
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_to_file: false
+  log_file_path: "logs/toc_corruption.log"
