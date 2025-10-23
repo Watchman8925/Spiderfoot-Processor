@@ -11,7 +11,7 @@
 # -------------------------------------------------------------------------------
 
 import unittest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock
 import sys
 import os
 
@@ -24,19 +24,19 @@ except ImportError:
     # If SpiderFoot classes aren't available, create mocks
     class SpiderFootPlugin:
         pass
-    
+
     class SpiderFootEvent:
         def __init__(self, eventType, data, module, sourceEvent):
             self.eventType = eventType
             self.data = data
             self.module = module
             self.sourceEvent = sourceEvent
-    
+
     # Mock the imports
     sys.modules['spiderfoot'] = MagicMock()
     sys.modules['spiderfoot'].SpiderFootPlugin = SpiderFootPlugin
     sys.modules['spiderfoot'].SpiderFootEvent = SpiderFootEvent
-    
+
     from sfp_toc_corruption import sfp_toc_corruption
 
 
@@ -46,11 +46,11 @@ class TestSfpTocCorruption(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.plugin = sfp_toc_corruption()
-        
+
         # Mock SpiderFoot core
         self.mock_sf = Mock()
         self.mock_sf.debug = Mock()
-        
+
         # Initialize the plugin
         self.plugin.setup(self.mock_sf, {})
 
@@ -65,7 +65,7 @@ class TestSfpTocCorruption(unittest.TestCase):
     def test_watched_events(self):
         """Test that plugin watches for expected event types."""
         watched = self.plugin.watchedEvents()
-        
+
         self.assertIn('EMAILADDR', watched)
         self.assertIn('DOMAIN_NAME', watched)
         self.assertIn('IP_ADDRESS', watched)
@@ -75,7 +75,7 @@ class TestSfpTocCorruption(unittest.TestCase):
     def test_produced_events(self):
         """Test that plugin produces expected event types."""
         produced = self.plugin.producedEvents()
-        
+
         self.assertIn('CORRUPTION_INDICATOR', produced)
         self.assertIn('TOC_INDICATOR', produced)
         self.assertIn('HIGH_RISK_DOMAIN', produced)
@@ -85,9 +85,9 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test content analysis for corruption keywords."""
         content = "This document discusses fraud and bribery in the organization."
         findings = self.plugin.analyzeContent(content, 'BREACH_DATA')
-        
+
         self.assertGreater(len(findings), 0)
-        
+
         # Check that corruption indicators were found
         corruption_findings = [f for f in findings if f['type'] == 'CORRUPTION_INDICATOR']
         self.assertGreater(len(corruption_findings), 0)
@@ -96,9 +96,9 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test content analysis for TOC keywords."""
         content = "System was compromised by malware and data was leaked."
         findings = self.plugin.analyzeContent(content, 'DARKNET_MENTION')
-        
+
         self.assertGreater(len(findings), 0)
-        
+
         # Check that TOC indicators were found
         toc_findings = [f for f in findings if f['type'] == 'TOC_INDICATOR']
         self.assertGreater(len(toc_findings), 0)
@@ -107,14 +107,14 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test content analysis with no matching keywords."""
         content = "This is a normal business document with no issues."
         findings = self.plugin.analyzeContent(content, 'BREACH_DATA')
-        
+
         self.assertEqual(len(findings), 0)
 
     def test_analyze_content_empty(self):
         """Test content analysis with empty content."""
         findings = self.plugin.analyzeContent("", 'BREACH_DATA')
         self.assertEqual(len(findings), 0)
-        
+
         findings = self.plugin.analyzeContent(None, 'BREACH_DATA')
         self.assertEqual(len(findings), 0)
 
@@ -122,14 +122,14 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test email address checking for suspicious patterns."""
         suspicious_email = "test.temp@example.com"
         indicators = self.plugin.checkEmailAddress(suspicious_email)
-        
+
         self.assertGreater(len(indicators), 0)
 
     def test_check_email_address_normal(self):
         """Test email address checking for normal email."""
         normal_email = "john.doe@example.com"
         indicators = self.plugin.checkEmailAddress(normal_email)
-        
+
         # Normal emails may or may not trigger indicators depending on patterns
         self.assertIsInstance(indicators, list)
 
@@ -137,7 +137,7 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test domain checking with suspicious TLD."""
         suspicious_domain = "example.xyz"
         indicators = self.plugin.checkDomain(suspicious_domain)
-        
+
         self.assertGreater(len(indicators), 0)
         self.assertTrue(any('Suspicious TLD' in ind for ind in indicators))
 
@@ -145,7 +145,7 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test domain checking with phishing terms."""
         phishing_domain = "secure-login-verify.com"
         indicators = self.plugin.checkDomain(phishing_domain)
-        
+
         self.assertGreater(len(indicators), 0)
         self.assertTrue(any('phishing term' in ind for ind in indicators))
 
@@ -153,7 +153,7 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test domain checking with normal domain."""
         normal_domain = "example.com"
         indicators = self.plugin.checkDomain(normal_domain)
-        
+
         # Normal domains may or may not trigger indicators
         self.assertIsInstance(indicators, list)
 
@@ -161,7 +161,7 @@ class TestSfpTocCorruption(unittest.TestCase):
         """Test IP address checking."""
         ip_address = "192.168.1.1"
         indicators = self.plugin.checkIPAddress(ip_address)
-        
+
         # IP checking is a placeholder, should return empty list
         self.assertIsInstance(indicators, list)
 
@@ -171,9 +171,9 @@ class TestSfpTocCorruption(unittest.TestCase):
             'check_emails': False,
             'sensitivity': 'high'
         }
-        
+
         self.plugin.setup(self.mock_sf, custom_opts)
-        
+
         self.assertEqual(self.plugin.opts['check_emails'], False)
         self.assertEqual(self.plugin.opts['sensitivity'], 'high')
 
@@ -183,10 +183,10 @@ class TestSfpTocCorruption(unittest.TestCase):
         mock_event.eventType = 'EMAILADDR'
         mock_event.module = 'sfp_toc_corruption'
         mock_event.data = 'test@example.com'
-        
+
         self.plugin.notifyListeners = Mock()
         self.plugin.handleEvent(mock_event)
-        
+
         # Should not notify listeners for own events
         self.plugin.notifyListeners.assert_not_called()
 
@@ -196,16 +196,16 @@ class TestSfpTocCorruption(unittest.TestCase):
         mock_event.eventType = 'EMAILADDR'
         mock_event.module = 'other_module'
         mock_event.data = 'test@example.com'
-        
+
         self.plugin.notifyListeners = Mock()
-        
+
         # Process the same event twice
         self.plugin.handleEvent(mock_event)
         first_call_count = self.plugin.notifyListeners.call_count
-        
+
         self.plugin.handleEvent(mock_event)
         second_call_count = self.plugin.notifyListeners.call_count
-        
+
         # Second call should not increase the count
         self.assertEqual(first_call_count, second_call_count)
 
@@ -233,11 +233,11 @@ class TestTocCorruptionIntegration(unittest.TestCase):
     def setUp(self):
         """Set up integration test fixtures."""
         self.plugin = sfp_toc_corruption()
-        
+
         # Mock SpiderFoot core
         self.mock_sf = Mock()
         self.mock_sf.debug = Mock()
-        
+
         # Initialize the plugin
         self.plugin.setup(self.mock_sf, {})
 
@@ -247,10 +247,10 @@ class TestTocCorruptionIntegration(unittest.TestCase):
         mock_event.eventType = 'EMAILADDR'
         mock_event.module = 'other_module'
         mock_event.data = 'suspicious.temp.test@example.com'
-        
+
         self.plugin.notifyListeners = Mock()
         self.plugin.handleEvent(mock_event)
-        
+
         # Should have notified listeners for suspicious email
         # Note: This will depend on the actual patterns detected
         # self.plugin.notifyListeners.assert_called()
@@ -261,10 +261,10 @@ class TestTocCorruptionIntegration(unittest.TestCase):
         mock_event.eventType = 'DOMAIN_NAME'
         mock_event.module = 'other_module'
         mock_event.data = 'secure-login.xyz'
-        
+
         self.plugin.notifyListeners = Mock()
         self.plugin.handleEvent(mock_event)
-        
+
         # Should have notified listeners for suspicious domain
         self.assertGreaterEqual(self.plugin.notifyListeners.call_count, 1)
 

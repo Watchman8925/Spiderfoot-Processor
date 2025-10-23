@@ -35,10 +35,10 @@ class sfp_toc_corruption(SpiderFootPlugin):
     }
 
     opts = {
-        'corruption_keywords': ['fraud', 'bribery', 'corruption', 'embezzlement', 'kickback', 
+        'corruption_keywords': ['fraud', 'bribery', 'corruption', 'embezzlement', 'kickback',
                                 'money laundering', 'extortion', 'graft'],
         'toc_keywords': ['breach', 'compromise', 'leaked', 'exposed', 'hacked', 'stolen',
-                        'malware', 'ransomware', 'backdoor', 'vulnerability'],
+                         'malware', 'ransomware', 'backdoor', 'vulnerability'],
         'check_emails': True,
         'check_domains': True,
         'check_ips': True,
@@ -60,13 +60,13 @@ class sfp_toc_corruption(SpiderFootPlugin):
     def setup(self, sfc, userOpts=dict()):
         """Initialize module and options."""
         self.sf = sfc
-        
+
         # Use tempStorage if available (from SpiderFootPlugin), otherwise use dict
         if hasattr(self, 'tempStorage'):
             self.results = self.tempStorage()
         else:
             self.results = dict()
-            
+
         self.errorState = False
 
         for opt in list(userOpts.keys()):
@@ -128,44 +128,44 @@ class sfp_toc_corruption(SpiderFootPlugin):
     def checkEmailAddress(self, email):
         """Check if email address shows signs of compromise."""
         indicators = []
-        
+
         # Check for common patterns in compromised emails
         suspicious_patterns = ['temp', 'fake', 'throwaway', 'test', 'spam']
-        
+
         email_lower = email.lower()
         for pattern in suspicious_patterns:
             if pattern in email_lower:
                 indicators.append(f"Suspicious pattern in email: {pattern}")
-        
+
         return indicators
 
     def checkDomain(self, domain):
         """Check if domain shows signs of compromise or malicious activity."""
         indicators = []
-        
+
         # Check for suspicious TLDs
         suspicious_tlds = ['.xyz', '.top', '.tk', '.ml', '.ga', '.cf', '.gq']
-        
+
         domain_lower = domain.lower()
         for tld in suspicious_tlds:
             if domain_lower.endswith(tld):
                 indicators.append(f"Suspicious TLD: {tld}")
-        
+
         # Check for typosquatting patterns
         suspicious_terms = ['secure', 'account', 'verify', 'login', 'update']
         for term in suspicious_terms:
             if term in domain_lower:
                 indicators.append(f"Potential phishing term: {term}")
-        
+
         return indicators
 
     def checkIPAddress(self, ip):
         """Check if IP address shows signs of malicious activity."""
         indicators = []
-        
+
         # This is a placeholder for IP reputation checks
         # In a real implementation, you would integrate with threat intelligence feeds
-        
+
         return indicators
 
     def handleEvent(self, event):
@@ -228,10 +228,10 @@ class sfp_toc_corruption(SpiderFootPlugin):
         for finding in findings:
             evt_type = finding.get('type', 'TOC_INDICATOR')
             evt_data = finding.get('data', '')
-            
+
             # Use class name for module identification
             module_name = self.__class__.__name__
-            
+
             # Only create event if SpiderFootEvent is available
             if 'SpiderFootEvent' in globals():
                 evt = SpiderFootEvent(evt_type, evt_data, module_name, event)
