@@ -2,6 +2,9 @@
 
 A comprehensive SpiderFoot plugin pack focused on detecting indicators of corruption and threat of compromise (TOC) across various data sources.
 
+**🆕 NEW: CSV Processor with Visualization and PDF Reports!**
+Now includes a powerful data processor that can import SpiderFoot CSV exports, analyze patterns, generate charts, and create professional PDF reports.
+
 ## Overview
 
 This plugin pack extends SpiderFoot's OSINT capabilities to identify potential corruption indicators and threats of compromise in your investigations. It analyzes various data types including email addresses, domains, IP addresses, and content from leak sites and breach data.
@@ -22,7 +25,25 @@ This plugin pack extends SpiderFoot's OSINT capabilities to identify potential c
 - **PDF Reports**: Create professional PDF reports with findings and recommendations
 - **Filtering & Search**: Filter by event types, modules, or search for specific keywords
 
+## Quick Start
+
+### For CSV Processing (No SpiderFoot Installation Needed!)
+
+```bash
+# Clone and install
+git clone https://github.com/Watchman8925/Spiderfoot-Processor.git
+cd Spiderfoot-Processor
+pip install -r requirements.txt
+
+# Process your SpiderFoot CSV export
+python spiderfoot_processor.py your_spiderfoot_export.csv
+
+# Results will be in ./reports directory
+```
+
 ## Installation
+
+### SpiderFoot Plugin
 
 1. Ensure you have SpiderFoot 4.0 or later installed
 2. Clone this repository:
