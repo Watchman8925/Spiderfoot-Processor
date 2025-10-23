@@ -143,6 +143,9 @@ reports/
 *.png
 *.pdf
 
+# Uploads
+uploads/
+
 # Sample/test data
 *.csv
 !tests/fixtures/*.csv

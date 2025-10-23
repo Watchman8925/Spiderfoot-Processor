@@ -27,7 +27,32 @@ This plugin pack extends SpiderFoot's OSINT capabilities to identify potential c
 
 ## Quick Start
 
-### For CSV Processing (No SpiderFoot Installation Needed!)
+### Web Application (NEW! 🎉)
+
+The easiest way to use the processor - a modern web interface:
+
+```bash
+# Clone and install
+git clone https://github.com/Watchman8925/Spiderfoot-Processor.git
+cd Spiderfoot-Processor
+pip install -r requirements.txt
+
+# Start the web app
+python web_app.py
+
+# Open browser to http://localhost:5000
+```
+
+Features:
+- 🌐 **Modern dark-themed web interface**
+- 📤 **Drag-and-drop CSV upload**
+- 📊 **Interactive visualizations**
+- 📄 **One-click PDF report generation**
+- 🔍 **Real-time analysis**
+
+### Command-Line Tool
+
+For CSV processing without a web browser:
 
 ```bash
 # Clone and install
@@ -85,7 +110,25 @@ The plugin can be configured through SpiderFoot's web interface or by modifying 
 4. Configure the module options as needed
 5. Start the scan
 
-### Using the Data Processor
+### Using the Web Application (NEW!)
+
+The modern web interface provides the easiest way to process and analyze your data:
+
+```bash
+# Start the web server
+python web_app.py
+
+# Open http://localhost:5000 in your browser
+```
+
+**Features:**
+1. **Upload**: Drag-and-drop or browse for your CSV file
+2. **Analyze**: View instant statistics and insights
+3. **Visualize**: Generate interactive charts automatically
+4. **Report**: Download professional PDF reports
+5. **Export**: Get JSON data for further processing
+
+### Using the Data Processor (Command-Line)
 
 Process your SpiderFoot CSV exports with advanced analysis and reporting:
 

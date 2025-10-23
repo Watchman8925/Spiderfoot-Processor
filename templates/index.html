@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpiderFoot TOC/Corruption Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <i class="fas fa-spider"></i>
+                <h1>SpiderFoot TOC/Corruption Analyzer</h1>
+            </div>
+            <p class="tagline">Advanced OSINT Data Processing & Analysis</p>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Upload Section -->
+            <section class="upload-section" id="uploadSection">
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <h2>Upload SpiderFoot CSV Export</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="upload-zone" id="uploadZone">
+                            <i class="fas fa-file-csv upload-icon"></i>
+                            <p class="upload-text">Drag & drop your CSV file here</p>
+                            <p class="upload-subtext">or</p>
+                            <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+                                <i class="fas fa-folder-open"></i> Browse Files
+                            </button>
+                            <input type="file" id="fileInput" accept=".csv" style="display: none;">
+                            <p class="file-info">Maximum file size: 50MB</p>
+                        </div>
+                        <div id="uploadProgress" class="upload-progress" style="display: none;">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="progressFill"></div>
+                            </div>
+                            <p id="progressText">Uploading...</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Summary Section -->
+            <section class="summary-section" id="summarySection" style="display: none;">
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-chart-bar"></i>
+                        <h2>Data Summary</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="stats-grid" id="statsGrid">
+                            <!-- Stats will be populated here -->
+                        </div>
+                        <div class="action-buttons">
+                            <button class="btn btn-primary" onclick="analyzeData()">
+                                <i class="fas fa-search"></i> Analyze Data
+                            </button>
+                            <button class="btn btn-secondary" onclick="resetApp()">
+                                <i class="fas fa-redo"></i> Upload Another File
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Analysis Section -->
+            <section class="analysis-section" id="analysisSection" style="display: none;">
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-microscope"></i>
+                        <h2>Analysis Results</h2>
+                    </div>
+                    <div class="card-body">
+                        <!-- Threat Overview -->
+                        <div class="threat-overview" id="threatOverview">
+                            <!-- Threat cards will be populated here -->
+                        </div>
+
+                        <!-- Detailed Analysis Tabs -->
+                        <div class="tabs">
+                            <button class="tab-button active" onclick="showTab('events')">
+                                <i class="fas fa-list"></i> Events
+                            </button>
+                            <button class="tab-button" onclick="showTab('modules')">
+                                <i class="fas fa-puzzle-piece"></i> Modules
+                            </button>
+                            <button class="tab-button" onclick="showTab('corruption')">
+                                <i class="fas fa-exclamation-triangle"></i> Corruption
+                            </button>
+                            <button class="tab-button" onclick="showTab('threats')">
+                                <i class="fas fa-shield-alt"></i> Threats
+                            </button>
+                            <button class="tab-button" onclick="showTab('recommendations')">
+                                <i class="fas fa-lightbulb"></i> Recommendations
+                            </button>
+                        </div>
+
+                        <div class="tab-content">
+                            <div id="eventsTab" class="tab-pane active"></div>
+                            <div id="modulesTab" class="tab-pane"></div>
+                            <div id="corruptionTab" class="tab-pane"></div>
+                            <div id="threatsTab" class="tab-pane"></div>
+                            <div id="recommendationsTab" class="tab-pane"></div>
+                        </div>
+
+                        <!-- Report Generation -->
+                        <div class="report-section">
+                            <h3><i class="fas fa-file-pdf"></i> Generate Reports</h3>
+                            <div class="report-options">
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="generateCharts" checked>
+                                    <span>Generate Charts (PNG)</span>
+                                </label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="generatePdf" checked>
+                                    <span>Generate PDF Report</span>
+                                </label>
+                            </div>
+                            <button class="btn btn-success" onclick="generateReport()">
+                                <i class="fas fa-file-download"></i> Generate & Download Reports
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Downloads Section -->
+            <section class="downloads-section" id="downloadsSection" style="display: none;">
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-download"></i>
+                        <h2>Download Reports</h2>
+                    </div>
+                    <div class="card-body">
+                        <div id="downloadsList" class="downloads-list">
+                            <!-- Download links will be populated here -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>&copy; 2025 SpiderFoot TOC/Corruption Analyzer | MIT License</p>
+            <p>
+                <a href="https://github.com/Watchman8925/Spiderfoot-Processor" target="_blank">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+            </p>
+        </footer>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-spinner">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p id="loadingText">Processing...</p>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
