@@ -8,11 +8,19 @@ This plugin pack extends SpiderFoot's OSINT capabilities to identify potential c
 
 ## Features
 
+### SpiderFoot Plugin
 - **Corruption Detection**: Identifies keywords and patterns associated with corruption, fraud, bribery, and other financial crimes
 - **Threat of Compromise Detection**: Detects indicators of system compromise, data breaches, and malicious activity
 - **Multi-Source Analysis**: Processes data from emails, domains, IP addresses, and dark web mentions
 - **Configurable Sensitivity**: Adjustable detection thresholds to balance false positives and detection accuracy
 - **Risk Scoring**: Categorizes findings based on risk level and confidence
+
+### Data Processor (NEW!)
+- **CSV Import**: Upload and process SpiderFoot CSV export files
+- **Advanced Analysis**: Analyze patterns, trends, and correlations in your data
+- **Visualization**: Generate charts and graphs for better insights
+- **PDF Reports**: Create professional PDF reports with findings and recommendations
+- **Filtering & Search**: Filter by event types, modules, or search for specific keywords
 
 ## Installation
 
@@ -48,11 +56,45 @@ The plugin can be configured through SpiderFoot's web interface or by modifying 
 
 ## Usage
 
+### Using the SpiderFoot Plugin
+
 1. Start SpiderFoot and navigate to the web interface
 2. Create a new scan
 3. Select "TOC/Corruption Detector" from the available modules
 4. Configure the module options as needed
 5. Start the scan
+
+### Using the Data Processor
+
+Process your SpiderFoot CSV exports with advanced analysis and reporting:
+
+```bash
+# Basic usage - process CSV and generate all reports
+python spiderfoot_processor.py your_spiderfoot_export.csv
+
+# Specify output directory
+python spiderfoot_processor.py your_export.csv -o ./my_reports
+
+# View summary statistics
+python spiderfoot_processor.py your_export.csv --summary
+
+# Filter by event type
+python spiderfoot_processor.py your_export.csv --filter-type CORRUPTION_INDICATOR TOC_INDICATOR
+
+# Search for specific keywords
+python spiderfoot_processor.py your_export.csv --search "malware"
+
+# Generate only PDF report
+python spiderfoot_processor.py your_export.csv --pdf-only
+
+# Export filtered data to new CSV
+python spiderfoot_processor.py your_export.csv --filter-type HIGH_RISK_DOMAIN -e high_risk_domains.csv
+```
+
+The processor will generate:
+- **Charts**: Visual representations of event distribution, module activity, and threat overview
+- **PDF Report**: Comprehensive report with executive summary, visualizations, detailed findings, and recommendations
+- **JSON Export**: Machine-readable analysis results (optional with `--json` flag)
 
 ### Event Types Processed
 

@@ -7,3 +7,13 @@
 # Additional dependencies for enhanced functionality
 requests>=2.31.0
 urllib3>=2.0.0
+
+# CSV Processing and Data Analysis
+# Required for spiderfoot_processor.py
+# (Core functionality works without these, but they're needed for full features)
+
+# For visualization and charting
+matplotlib>=3.5.0
+
+# For PDF report generation
+reportlab>=3.6.0

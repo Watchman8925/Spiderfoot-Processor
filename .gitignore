@@ -137,3 +137,12 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# Generated reports
+reports/
+*.png
+*.pdf
+
+# Sample/test data
+*.csv
+!tests/fixtures/*.csv
