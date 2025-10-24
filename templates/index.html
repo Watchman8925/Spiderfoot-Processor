@@ -130,6 +130,10 @@
                                     <input type="checkbox" id="generatePdf" checked>
                                     <span>Generate PDF Report</span>
                                 </label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="enableWebResearch" {% if default_web_research %}checked{% endif %}>
+                                    <span>Enrich with Web Research (requires internet)</span>
+                                </label>
                             </div>
                             <button class="btn btn-success" onclick="generateReport()">
                                 <i class="fas fa-file-download"></i> Generate & Download Reports

@@ -5,6 +5,7 @@ const RECORD_RENDER_LIMIT = 1000;
 let currentFilename = null;
 let currentAnalysis = null;
 let currentAiReport = null;
+let currentWebResearch = null;
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
@@ -170,44 +171,415 @@ function displayAnalysis(analysis) {
 // Display threat overview cards
 function displayThreatOverview(analysis) {
     const threatOverview = document.getElementById('threatOverview');
+    const threatDetails = document.getElementById('threatDetails');
     threatOverview.innerHTML = '';
+
+    const corruption = analysis.corruption_patterns || {};
+    const toc = analysis.toc_patterns || {};
+    const riskDomains = analysis.risk_domains || {};
+    const compromisedAssets = analysis.compromised_assets || {};
 
     const threats = [
         {
             label: 'Corruption Indicators',
-            count: analysis.corruption_patterns.total_indicators,
+            count: Number(corruption.total_indicators || 0),
             icon: 'fa-exclamation-triangle',
             class: 'corruption'
         },
         {
             label: 'TOC Indicators',
-            count: analysis.toc_patterns.total_indicators,
+            count: Number(toc.total_indicators || 0),
             icon: 'fa-shield-alt',
             class: 'toc'
         },
         {
             label: 'High-Risk Domains',
-            count: analysis.risk_domains.total_risk_domains,
+            count: Number(riskDomains.total_risk_domains || 0),
             icon: 'fa-globe',
             class: 'domains'
         },
         {
             label: 'Compromised Assets',
-            count: analysis.compromised_assets.total_compromised,
+            count: Number(compromisedAssets.total_compromised || 0),
             icon: 'fa-server',
             class: 'assets'
         }
     ];
 
+    const chooseThreat = (category, cardEl) => {
+        setActiveThreatCard(cardEl);
+        renderThreatDetails(category, analysis);
+    };
+
+    const firstActionable = threats.find(threat => threat.count > 0) || threats[0];
+    let defaultCard = null;
+
     threats.forEach(threat => {
         const card = document.createElement('div');
         card.className = `threat-card ${threat.class}`;
+        card.setAttribute('role', 'button');
+        card.setAttribute('tabindex', '0');
+        card.setAttribute('aria-pressed', 'false');
+        card.dataset.threatKey = threat.class;
         card.innerHTML = `
             <i class="fas ${threat.icon}"></i>
             <div class="threat-count">${threat.count}</div>
             <div class="threat-label">${threat.label}</div>
         `;
+
+        card.addEventListener('click', () => chooseThreat(threat.class, card));
+        card.addEventListener('keydown', (evt) => {
+            if (evt.key === 'Enter' || evt.key === ' ') {
+                evt.preventDefault();
+                chooseThreat(threat.class, card);
+            }
+        });
+
+        if (threat === firstActionable) {
+            defaultCard = card;
+        }
+
         threatOverview.appendChild(card);
+    });
+
+    if (defaultCard) {
+        chooseThreat(defaultCard.dataset.threatKey, defaultCard);
+    } else if (threatDetails) {
+        threatDetails.innerHTML = '<p>Select a category above to view detailed findings.</p>';
+    }
+}
+
+function setActiveThreatCard(card) {
+    document.querySelectorAll('#threatOverview .threat-card').forEach((el) => {
+        el.classList.remove('active');
+        el.setAttribute('aria-pressed', 'false');
+    });
+    if (card) {
+        card.classList.add('active');
+        card.setAttribute('aria-pressed', 'true');
+    }
+}
+
+function renderThreatDetails(category, analysis) {
+    const threatDetails = document.getElementById('threatDetails');
+    if (!threatDetails) {
+        return;
+    }
+
+    threatDetails.classList.add('detail-panel');
+    threatDetails.innerHTML = '';
+
+    const heading = document.createElement('h3');
+    heading.className = 'detail-heading';
+    threatDetails.appendChild(heading);
+
+    const summary = document.createElement('p');
+    summary.className = 'detail-summary';
+    threatDetails.appendChild(summary);
+
+    if (category === 'corruption') {
+        const corruption = analysis.corruption_patterns || {};
+        heading.textContent = 'Corruption Indicators';
+        summary.textContent = `Total indicators detected: ${Number(corruption.total_indicators || 0).toLocaleString()}`;
+
+        renderKeywordBadges(threatDetails, corruption.most_common_keywords, 'Most Common Keywords');
+        renderRecordTable(
+            threatDetails,
+            corruption.events || [],
+            'Corruption Indicator Events',
+            'No corruption indicators were detected in this dataset.'
+        );
+        return;
+    }
+
+    if (category === 'toc') {
+        const toc = analysis.toc_patterns || {};
+        heading.textContent = 'Threat of Compromise Indicators';
+        summary.textContent = `Total indicators detected: ${Number(toc.total_indicators || 0).toLocaleString()}`;
+
+        renderKeywordBadges(threatDetails, toc.most_common_keywords, 'Frequently Observed Keywords');
+        renderRecordTable(
+            threatDetails,
+            toc.events || [],
+            'Threat of Compromise Events',
+            'No threat-of-compromise signals were found.'
+        );
+        return;
+    }
+
+    if (category === 'domains') {
+        const domains = analysis.risk_domains || {};
+        const details = Object.entries(domains.domain_details || {});
+
+        heading.textContent = 'High-Risk Domains';
+        summary.textContent = `Total domains flagged: ${Number(domains.total_risk_domains || 0).toLocaleString()}`;
+
+        if (details.length > 0) {
+            const domainSection = document.createElement('div');
+            domainSection.className = 'detail-section';
+            const domainHeading = document.createElement('h4');
+            domainHeading.textContent = 'Domains by Frequency';
+            domainSection.appendChild(domainHeading);
+
+            const tableRows = details
+                .sort((a, b) => (b[1].occurrences || 0) - (a[1].occurrences || 0))
+                .slice(0, RECORD_RENDER_LIMIT)
+                .map(([domain, info]) => {
+                    const reasons = Object.entries(info.reasons || {})
+                        .sort((a, b) => b[1] - a[1]);
+                    const topReason = reasons.length > 0 ? reasons[0][0] : 'Multiple signals';
+                    const modules = Array.isArray(info.modules) ? info.modules : [];
+                    return `
+                        <tr>
+                            <td>${escapeHtml(domain)}</td>
+                            <td>${Number(info.occurrences || 0).toLocaleString()}</td>
+                            <td>${escapeHtml(topReason)}</td>
+                            <td>${escapeHtml(modules.join(', ') || 'n/a')}</td>
+                        </tr>
+                    `;
+                })
+                .join('');
+
+            const table = document.createElement('table');
+            table.className = 'data-table record-table';
+            table.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Domain</th>
+                        <th>Hits</th>
+                        <th>Primary Reason</th>
+                        <th>Modules</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${tableRows}
+                </tbody>
+            `;
+
+            domainSection.appendChild(table);
+
+            if (details.length > RECORD_RENDER_LIMIT) {
+                const note = document.createElement('p');
+                note.className = 'record-count-note';
+                note.textContent = `Showing top ${RECORD_RENDER_LIMIT.toLocaleString()} of ${details.length.toLocaleString()} domains.`;
+                domainSection.appendChild(note);
+            }
+
+            threatDetails.appendChild(domainSection);
+        } else {
+            const empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.textContent = 'No high-risk domains were flagged in this analysis.';
+            threatDetails.appendChild(empty);
+        }
+
+        renderRecordTable(
+            threatDetails,
+            domains.records || [],
+            'Domain Risk Evidence',
+            'No supporting domain events captured.'
+        );
+        return;
+    }
+
+    if (category === 'assets') {
+        const assets = analysis.compromised_assets || {};
+        const assetDetails = Object.entries(assets.asset_details || {});
+
+        heading.textContent = 'Compromised Assets';
+        summary.textContent = `Total assets flagged: ${Number(assets.total_compromised || 0).toLocaleString()}`;
+
+        if (assetDetails.length > 0) {
+            const assetSection = document.createElement('div');
+            assetSection.className = 'detail-section';
+            const assetHeading = document.createElement('h4');
+            assetHeading.textContent = 'Assets by Severity';
+            assetSection.appendChild(assetHeading);
+
+            const tableRows = assetDetails
+                .sort((a, b) => (b[1].occurrences || 0) - (a[1].occurrences || 0))
+                .slice(0, RECORD_RENDER_LIMIT)
+                .map(([label, info]) => {
+                    const modules = Array.isArray(info.modules) ? info.modules : [];
+                    const sources = Array.isArray(info.sources) ? info.sources : [];
+                    return `
+                        <tr>
+                            <td>${escapeHtml(label)}</td>
+                            <td>${escapeHtml(info.type || 'Unknown')}</td>
+                            <td>${Number(info.occurrences || 0).toLocaleString()}</td>
+                            <td>${escapeHtml(modules.join(', ') || 'n/a')}</td>
+                            <td>${escapeHtml(sources.join(', ') || 'n/a')}</td>
+                        </tr>
+                    `;
+                })
+                .join('');
+
+            const table = document.createElement('table');
+            table.className = 'data-table record-table';
+            table.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Asset</th>
+                        <th>Type</th>
+                        <th>Hits</th>
+                        <th>Modules</th>
+                        <th>Sources</th>
+                    </tr>
+                </thead>
+                <tbody>${tableRows}</tbody>
+            `;
+
+            assetSection.appendChild(table);
+
+            if (assetDetails.length > RECORD_RENDER_LIMIT) {
+                const note = document.createElement('p');
+                note.className = 'record-count-note';
+                note.textContent = `Showing top ${RECORD_RENDER_LIMIT.toLocaleString()} of ${assetDetails.length.toLocaleString()} assets.`;
+                assetSection.appendChild(note);
+            }
+
+            threatDetails.appendChild(assetSection);
+        } else {
+            const empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.textContent = 'No compromised assets were detected.';
+            threatDetails.appendChild(empty);
+        }
+
+        renderRecordTable(
+            threatDetails,
+            assets.records || [],
+            'Asset Intelligence Events',
+            'No supporting asset telemetry was recorded.'
+        );
+        return;
+    }
+
+    heading.textContent = 'Threat Overview';
+    summary.textContent = 'Select a card above to inspect supporting evidence.';
+}
+
+function renderKeywordBadges(container, keywords, title) {
+    if (!Array.isArray(keywords) || keywords.length === 0) {
+        return;
+    }
+
+    const section = document.createElement('div');
+    section.className = 'detail-section';
+
+    const heading = document.createElement('h4');
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'keyword-badge-wrapper';
+
+    keywords.forEach(([keyword, count]) => {
+        const badge = document.createElement('span');
+        badge.className = 'keyword-badge';
+        badge.textContent = `${keyword} (${count})`;
+        wrapper.appendChild(badge);
+    });
+
+    section.appendChild(wrapper);
+    container.appendChild(section);
+}
+
+function renderRecordTable(container, records, title, emptyMessage) {
+    const section = document.createElement('div');
+    section.className = 'detail-section';
+
+    const heading = document.createElement('h4');
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    if (!Array.isArray(records) || records.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'empty-state';
+        empty.textContent = emptyMessage;
+        section.appendChild(empty);
+        container.appendChild(section);
+        return;
+    }
+
+    const limit = Math.min(records.length, RECORD_RENDER_LIMIT);
+    const rows = records.slice(0, limit).map((record) => {
+        const eventType = record.type || record.Type || 'Unknown';
+        const module = record.module || record.Module || 'Unknown';
+        const source = record.source || record.Source || '';
+        const dataField = record.data || record.Data || '';
+        const timestamp = record.timestamp || record.Time || record.Timestamp || '';
+
+        return `
+            <tr>
+                <td>${escapeHtml(eventType)}</td>
+                <td>${escapeHtml(module)}</td>
+                <td>${escapeHtml(truncateText(source, 120))}</td>
+                <td>${escapeHtml(truncateText(dataField, 200))}</td>
+                <td>${escapeHtml(timestamp)}</td>
+            </tr>
+        `;
+    }).join('');
+
+    const table = document.createElement('table');
+    table.className = 'data-table record-table';
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Type</th>
+                <th>Module</th>
+                <th>Source</th>
+                <th>Data</th>
+                <th>Timestamp</th>
+            </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+    `;
+
+    section.appendChild(table);
+
+    const note = document.createElement('p');
+    note.className = 'record-count-note';
+    if (records.length > limit) {
+        note.textContent = `Showing first ${limit.toLocaleString()} of ${records.length.toLocaleString()} records.`;
+    } else {
+        const label = records.length === 1 ? 'record' : 'records';
+        note.textContent = `Showing ${records.length.toLocaleString()} ${label}.`;
+    }
+    section.appendChild(note);
+
+    container.appendChild(section);
+}
+
+function truncateText(value, maxLength) {
+    if (typeof value !== 'string') {
+        value = value == null ? '' : String(value);
+    }
+    if (!maxLength || value.length <= maxLength) {
+        return value;
+    }
+    return `${value.slice(0, maxLength - 1)}…`;
+}
+
+function escapeHtml(value) {
+    if (value == null) {
+        return '';
+    }
+    return String(value).replace(/[&<>"']/g, (char) => {
+        switch (char) {
+            case '&':
+                return '&amp;';
+            case '<':
+                return '&lt;';
+            case '>':
+                return '&gt;';
+            case '"':
+                return '&quot;';
+            case '\'':
+                return '&#39;';
+            default:
+                return char;
+        }
     });
 }
 
@@ -216,34 +588,60 @@ function displayEventsTab(eventDist) {
     const tab = document.getElementById('eventsTab');
     tab.innerHTML = '<h3>Event Type Distribution</h3>';
 
-    if (eventDist.distribution) {
-        const table = document.createElement('table');
-        table.className = 'data-table';
-        table.innerHTML = `
-            <thead>
-                <tr>
-                    <th>Event Type</th>
-                    <th>Count</th>
-                    <th>Percentage</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${Object.entries(eventDist.distribution)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([type, count]) => {
-                        const percent = ((count / eventDist.total_events) * 100).toFixed(1);
-                        return `
-                            <tr>
-                                <td>${type}</td>
-                                <td>${count}</td>
-                                <td>${percent}%</td>
-                            </tr>
-                        `;
-                    }).join('')}
-            </tbody>
-        `;
-        tab.appendChild(table);
+    if (!eventDist || !eventDist.distribution) {
+        tab.innerHTML += '<p>No event data available.</p>';
+        return;
     }
+
+    const recordsByType = eventDist.records_by_type || {};
+    const totalEvents = eventDist.total_events || 0;
+
+    const table = document.createElement('table');
+    table.className = 'data-table';
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Event Type</th>
+                <th>Count</th>
+                <th>Percentage</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${Object.entries(eventDist.distribution)
+                .sort((a, b) => b[1] - a[1])
+                .map(([type, count]) => {
+                    const percent = totalEvents ? ((count / totalEvents) * 100).toFixed(1) : '0.0';
+                    return `
+                        <tr data-event-type="${escapeHtml(type)}">
+                            <td>${escapeHtml(type)}</td>
+                            <td>${Number(count).toLocaleString()}</td>
+                            <td>${percent}%</td>
+                        </tr>
+                    `;
+                }).join('')}
+        </tbody>
+    `;
+    tab.appendChild(table);
+
+    const detailContainer = document.createElement('div');
+    detailContainer.className = 'detail-panel';
+    detailContainer.innerHTML = '<p class="empty-state">Select an event type to view sample records.</p>';
+    tab.appendChild(detailContainer);
+
+    Array.from(table.querySelectorAll('tbody tr')).forEach((row) => {
+        const eventType = row.dataset.eventType;
+        row.classList.add('clickable');
+        row.addEventListener('click', () => {
+            const records = recordsByType[eventType] || [];
+            detailContainer.innerHTML = '';
+            renderRecordTable(
+                detailContainer,
+                records,
+                `${eventType} Records`,
+                `No detailed records persisted for ${eventType}.`
+            );
+        });
+    });
 }
 
 // Display modules tab
@@ -251,27 +649,54 @@ function displayModulesTab(moduleActivity) {
     const tab = document.getElementById('modulesTab');
     tab.innerHTML = '<h3>Module Activity</h3>';
 
-    if (moduleActivity.most_active && moduleActivity.most_active.length > 0) {
-        const table = document.createElement('table');
-        table.className = 'data-table';
-        table.innerHTML = `
-            <thead>
-                <tr>
-                    <th>Module</th>
-                    <th>Events Generated</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${moduleActivity.most_active.map(([module, count]) => `
-                    <tr>
-                        <td>${module}</td>
-                        <td>${count}</td>
-                    </tr>
-                `).join('')}
-            </tbody>
-        `;
-        tab.appendChild(table);
+    if (!moduleActivity || !Array.isArray(moduleActivity.most_active) || moduleActivity.most_active.length === 0) {
+        tab.innerHTML += '<p>No module activity captured.</p>';
+        return;
     }
+
+    const recordsByModule = moduleActivity.records_by_module || {};
+
+    const table = document.createElement('table');
+    table.className = 'data-table';
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Module</th>
+                <th>Events Generated</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${moduleActivity.most_active
+                .map(([module, count]) => `
+                    <tr data-module-name="${escapeHtml(module)}">
+                        <td>${escapeHtml(module)}</td>
+                        <td>${Number(count).toLocaleString()}</td>
+                    </tr>
+                `)
+                .join('')}
+        </tbody>
+    `;
+    tab.appendChild(table);
+
+    const detailContainer = document.createElement('div');
+    detailContainer.className = 'detail-panel';
+    detailContainer.innerHTML = '<p class="empty-state">Select a module to inspect its emitted records.</p>';
+    tab.appendChild(detailContainer);
+
+    Array.from(table.querySelectorAll('tbody tr')).forEach((row) => {
+        const moduleName = row.dataset.moduleName;
+        row.classList.add('clickable');
+        row.addEventListener('click', () => {
+            const records = recordsByModule[moduleName] || [];
+            detailContainer.innerHTML = '';
+            renderRecordTable(
+                detailContainer,
+                records,
+                `${moduleName} Output`,
+                `No records were captured for ${moduleName}.`
+            );
+        });
+    });
 }
 
 // Display corruption tab
@@ -307,6 +732,13 @@ function displayCorruptionTab(corruptionPatterns) {
 
         tab.appendChild(keywordsSection);
     }
+
+    renderRecordTable(
+        tab,
+        corruptionPatterns.events || [],
+        'Corruption Indicator Records',
+        'No corruption indicator events were identified.'
+    );
 }
 
 // Display threats tab
@@ -342,6 +774,13 @@ function displayThreatsTab(tocPatterns) {
 
         tab.appendChild(keywordsSection);
     }
+
+    renderRecordTable(
+        tab,
+        tocPatterns.events || [],
+        'Threat of Compromise Records',
+        'No threat of compromise events were captured.'
+    );
 }
 
 // Display recommendations tab
@@ -349,15 +788,158 @@ function displayRecommendationsTab(recommendations) {
     const tab = document.getElementById('recommendationsTab');
     tab.innerHTML = '<h3>Security Recommendations</h3>';
 
-    if (recommendations && recommendations.length > 0) {
-        recommendations.forEach(rec => {
+    const primaryRecommendations = Array.isArray(recommendations) ? recommendations : [];
+    const aiRecommendations = currentAiReport && Array.isArray(currentAiReport.recommendations)
+        ? currentAiReport.recommendations
+        : [];
+
+    if (primaryRecommendations.length > 0) {
+        primaryRecommendations.forEach((rec) => {
             const item = document.createElement('div');
             item.className = 'recommendation-item';
             item.textContent = rec;
             tab.appendChild(item);
         });
-    } else {
+    }
+
+    if (aiRecommendations.length > 0) {
+        const divider = document.createElement('h4');
+        divider.textContent = 'AI-Generated Strategic Recommendations';
+        tab.appendChild(divider);
+
+        aiRecommendations.forEach((rec) => {
+            const item = document.createElement('div');
+            item.className = 'recommendation-item';
+            item.textContent = rec;
+            tab.appendChild(item);
+        });
+    }
+
+    if (primaryRecommendations.length === 0 && aiRecommendations.length === 0) {
         tab.innerHTML += '<p>No specific recommendations at this time.</p>';
+    }
+}
+
+function createPivotCard(pivot, originLabel = null) {
+    const card = document.createElement('div');
+    card.className = 'pivot-card';
+
+    const header = document.createElement('div');
+    header.className = 'pivot-header';
+
+    const category = document.createElement('span');
+    category.className = 'pivot-category';
+    category.textContent = pivot.category || originLabel || 'Lead';
+    header.appendChild(category);
+
+    const confidence = document.createElement('span');
+    const confidenceValue = (pivot.confidence || 'unknown').toLowerCase();
+    confidence.className = `pivot-confidence ${confidenceValue}`;
+    confidence.textContent = pivot.confidence || 'Unknown';
+    header.appendChild(confidence);
+
+    card.appendChild(header);
+
+    if (originLabel) {
+        const origin = document.createElement('span');
+        origin.className = 'pivot-origin';
+        origin.textContent = originLabel;
+        card.appendChild(origin);
+    }
+
+    const title = document.createElement('h4');
+    title.textContent = pivot.title || pivot.indicator || 'Investigative Lead';
+    card.appendChild(title);
+
+    if (pivot.summary) {
+        const summary = document.createElement('p');
+        summary.className = 'pivot-summary';
+        summary.textContent = pivot.summary;
+        card.appendChild(summary);
+    }
+
+    if (pivot.rationale) {
+        const rationale = document.createElement('p');
+        rationale.className = 'pivot-rationale';
+        const emphasis = document.createElement('strong');
+        emphasis.textContent = 'Why it matters:';
+        rationale.appendChild(emphasis);
+        rationale.append(` ${pivot.rationale}`);
+        card.appendChild(rationale);
+    }
+
+    const recommendation = pivot.recommended_actions || pivot.recommended_action;
+    if (recommendation) {
+        const actions = document.createElement('p');
+        actions.className = 'pivot-actions';
+        const emphasis = document.createElement('strong');
+        emphasis.textContent = 'Next Steps:';
+        actions.appendChild(emphasis);
+        actions.append(` ${recommendation}`);
+        card.appendChild(actions);
+    }
+
+    const evidence = pivot.supporting_evidence || [];
+    if (Array.isArray(evidence) && evidence.length > 0) {
+        const evidenceEl = document.createElement('p');
+        evidenceEl.className = 'pivot-evidence';
+        const emphasis = document.createElement('strong');
+        emphasis.textContent = 'Supporting Evidence:';
+        evidenceEl.appendChild(emphasis);
+        evidenceEl.append(` ${evidence.slice(0, 5).join('; ')}`);
+        card.appendChild(evidenceEl);
+    }
+
+    if (pivot.metrics && Object.keys(pivot.metrics).length > 0) {
+        const metrics = document.createElement('p');
+        metrics.className = 'pivot-metrics';
+        const emphasis = document.createElement('strong');
+        emphasis.textContent = 'Metrics:';
+        metrics.appendChild(emphasis);
+        const metricText = Object.entries(pivot.metrics)
+            .map(([key, value]) => `${key}: ${value}`)
+            .join(' • ');
+        metrics.append(` ${metricText}`);
+        card.appendChild(metrics);
+    }
+
+    return card;
+}
+
+function displayPivotsTab(pivots) {
+    const tab = document.getElementById('pivotsTab');
+    tab.innerHTML = '<h3>Investigative Pivots & Leads</h3>';
+
+    let hasContent = false;
+
+    if (Array.isArray(pivots) && pivots.length > 0) {
+        const sectionHeading = document.createElement('h4');
+        sectionHeading.textContent = 'Analytical Surface Leads';
+        tab.appendChild(sectionHeading);
+
+        pivots.forEach((pivot) => {
+            tab.appendChild(createPivotCard(pivot, 'Analysis Engine'));
+        });
+        hasContent = true;
+    }
+
+    const aiPivots = currentAiReport && Array.isArray(currentAiReport.pivots_and_leads)
+        ? currentAiReport.pivots_and_leads
+        : [];
+
+    if (aiPivots.length > 0) {
+        const sectionHeading = document.createElement('h4');
+        sectionHeading.textContent = 'AI-Identified Strategic Leads';
+        tab.appendChild(sectionHeading);
+
+        aiPivots.forEach((pivot) => {
+            tab.appendChild(createPivotCard(pivot, 'AI Narrative'));
+        });
+        hasContent = true;
+    }
+
+    if (!hasContent) {
+        tab.innerHTML += '<p>No pivots or investigative leads identified yet.</p>';
     }
 }
 
@@ -370,131 +952,13 @@ async function generateReport() {
 
     const options = {
         generate_charts: document.getElementById('generateCharts').checked,
-        generate_pdf: document.getElementById('generatePdf').checked
+        generate_pdf: document.getElementById('generatePdf').checked,
+        enable_web_research: document.getElementById('enableWebResearch').checked
     };
 
     showLoading('Generating reports... This may take a moment.');
 
     try {
-
-    function createPivotCard(pivot, originLabel = null) {
-        const card = document.createElement('div');
-        card.className = 'pivot-card';
-
-        const header = document.createElement('div');
-        header.className = 'pivot-header';
-
-        const category = document.createElement('span');
-        category.className = 'pivot-category';
-        category.textContent = pivot.category || originLabel || 'Lead';
-        header.appendChild(category);
-
-        const confidence = document.createElement('span');
-        const confidenceValue = (pivot.confidence || 'unknown').toLowerCase();
-        confidence.className = `pivot-confidence ${confidenceValue}`;
-        confidence.textContent = pivot.confidence || 'Unknown';
-        header.appendChild(confidence);
-
-        card.appendChild(header);
-
-        if (originLabel) {
-            const origin = document.createElement('span');
-            origin.className = 'pivot-origin';
-            origin.textContent = originLabel;
-            card.appendChild(origin);
-        }
-
-        const title = document.createElement('h4');
-        title.textContent = pivot.title || pivot.indicator || 'Investigative Lead';
-        card.appendChild(title);
-
-        if (pivot.summary) {
-            const summary = document.createElement('p');
-            summary.className = 'pivot-summary';
-            summary.textContent = pivot.summary;
-            card.appendChild(summary);
-        }
-
-        if (pivot.rationale) {
-            const rationale = document.createElement('p');
-            rationale.className = 'pivot-rationale';
-            rationale.innerHTML = `<strong>Why it matters:</strong> ${pivot.rationale}`;
-            card.appendChild(rationale);
-        }
-
-        const recommendation = pivot.recommended_actions || pivot.recommended_action;
-        if (recommendation) {
-            const actions = document.createElement('p');
-            actions.className = 'pivot-actions';
-            actions.innerHTML = `<strong>Next Steps:</strong> ${recommendation}`;
-            card.appendChild(actions);
-        }
-
-        const evidence = pivot.supporting_evidence || [];
-        if (Array.isArray(evidence) && evidence.length > 0) {
-            const evidenceEl = document.createElement('p');
-            evidenceEl.className = 'pivot-evidence';
-            evidenceEl.innerHTML = `<strong>Supporting Evidence:</strong> ${evidence.slice(0, 5).join('; ')}`;
-            card.appendChild(evidenceEl);
-        }
-
-        if (pivot.metrics && Object.keys(pivot.metrics).length > 0) {
-            const metrics = document.createElement('p');
-            metrics.className = 'pivot-metrics';
-            const formatted = Object.entries(pivot.metrics)
-                .map(([key, value]) => `${key}: ${value}`)
-                .join(' • ');
-            metrics.innerHTML = `<strong>Metrics:</strong> ${formatted}`;
-                    currentAiReport = result.ai_report || null;
-                    if (currentAiReport) {
-                        showToast('AI narrative generated. Markdown download available.', 'info');
-                        if (currentAnalysis) {
-                            displayPivotsTab(currentAnalysis.pivots_and_leads || []);
-                            displayRecommendationsTab(currentAnalysis.recommendations || []);
-                        }
-                    }
-            card.appendChild(metrics);
-        }
-
-        return card;
-    }
-
-    function displayPivotsTab(pivots) {
-        const tab = document.getElementById('pivotsTab');
-        tab.innerHTML = '<h3>Investigative Pivots & Leads</h3>';
-
-        let hasContent = false;
-
-        if (Array.isArray(pivots) && pivots.length > 0) {
-            const sectionHeading = document.createElement('h4');
-            sectionHeading.textContent = 'Analytical Surface Leads';
-            tab.appendChild(sectionHeading);
-
-            pivots.forEach(pivot => {
-                tab.appendChild(createPivotCard(pivot, 'Analysis Engine'));
-            });
-            hasContent = true;
-        }
-
-        const aiPivots = currentAiReport && Array.isArray(currentAiReport.pivots_and_leads)
-            ? currentAiReport.pivots_and_leads
-            : [];
-
-        if (aiPivots.length > 0) {
-            const sectionHeading = document.createElement('h4');
-            sectionHeading.textContent = 'AI-Identified Strategic Leads';
-            tab.appendChild(sectionHeading);
-
-            aiPivots.forEach(pivot => {
-                tab.appendChild(createPivotCard(pivot, 'AI Narrative'));
-            });
-            hasContent = true;
-        }
-
-        if (!hasContent) {
-            tab.innerHTML += '<p>No pivots or investigative leads identified yet.</p>';
-        }
-    }
         const response = await fetch('/generate_report', {
             method: 'POST',
             headers: {
@@ -508,26 +972,31 @@ async function generateReport() {
 
         const result = await response.json();
 
-        if (response.ok) {
-            hideLoading();
-
-        if (currentAiReport && Array.isArray(currentAiReport.recommendations) && currentAiReport.recommendations.length > 0) {
-            const divider = document.createElement('h4');
-            divider.textContent = 'AI-Generated Strategic Recommendations';
-            tab.appendChild(divider);
-
-            currentAiReport.recommendations.forEach(rec => {
-                const item = document.createElement('div');
-                item.className = 'recommendation-item';
-                item.textContent = rec;
-                tab.appendChild(item);
-            });
-        }
-            displayDownloads(result.report_id, result.files);
-            showToast('Reports generated successfully!', 'success');
-        } else {
+        if (!response.ok) {
             throw new Error(result.error || 'Report generation failed');
         }
+
+        hideLoading();
+
+        currentAiReport = result.ai_report || null;
+        currentWebResearch = result.web_research || null;
+
+        if (currentAnalysis) {
+            displayPivotsTab(currentAnalysis.pivots_and_leads || []);
+            displayRecommendationsTab(currentAnalysis.recommendations || []);
+        }
+
+        if (currentAiReport) {
+            showToast('AI narrative generated. Markdown download available.', 'info');
+        }
+
+        if (currentWebResearch && Array.isArray(currentWebResearch.queries) && currentWebResearch.queries.length > 0) {
+            const providerLabel = currentWebResearch.provider ? ` via ${currentWebResearch.provider}` : '';
+            showToast(`Web research enrichment available${providerLabel}.`, 'info');
+        }
+
+        displayDownloads(result.report_id, result.files);
+        showToast('Reports generated successfully!', 'success');
     } catch (error) {
         hideLoading();
         showToast(`Error: ${error.message}`, 'error');
@@ -541,7 +1010,10 @@ function displayDownloads(reportId, files) {
 
     const fileTypes = {
         'pdf': { icon: 'fa-file-pdf', label: 'PDF Report', color: '#f56565' },
-        'json': { icon: 'fa-file-code', label: 'JSON Data', color: '#4299e1' },
+        'pdf_intelligence': { icon: 'fa-file-pdf', label: 'Intelligence Report PDF', color: '#f56565' },
+        'pdf_narrative': { icon: 'fa-file-pdf', label: 'Narrative Exposé PDF', color: '#ed8936' },
+    'json': { icon: 'fa-file-code', label: 'JSON Data', color: '#4299e1' },
+    'web_research': { icon: 'fa-search', label: 'Web Research Summary', color: '#805ad5' },
         'charts': { icon: 'fa-chart-bar', label: 'Charts', color: '#48bb78' }
     };
 
@@ -585,7 +1057,7 @@ function addDownloadItem(container, reportId, filename, fileInfo) {
 }
 
 // Tab switching
-function showTab(tabName) {
+function showTab(tabName, evt) {
     // Hide all tab panes
     document.querySelectorAll('.tab-pane').forEach(pane => {
         pane.classList.remove('active');
@@ -597,10 +1069,19 @@ function showTab(tabName) {
     });
 
     // Show selected tab
-    document.getElementById(`${tabName}Tab`).classList.add('active');
+    const activePane = document.getElementById(`${tabName}Tab`);
+    if (activePane) {
+        activePane.classList.add('active');
+    }
 
     // Add active class to clicked button
-    event.target.closest('.tab-button').classList.add('active');
+    if (evt && evt.target) {
+        const button = evt.target.closest('.tab-button');
+        if (button) {
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            button.classList.add('active');
+        }
+    }
 }
 
 // Reset app

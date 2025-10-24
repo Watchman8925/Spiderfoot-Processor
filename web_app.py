@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from processor.csv_importer import SpiderFootCSVImporter
 from processor.analyzer import SpiderFootAnalyzer
 from processor.report_generator import ReportGenerator
+from processor.web_research import WebResearchConfig
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -44,7 +45,8 @@ def allowed_file(filename):
 @app.route('/')
 def index():
     """Render the main page."""
-    return render_template('index.html')
+    default_web_research = WebResearchConfig.from_environment().enabled
+    return render_template('index.html', default_web_research=default_web_research)
 
 
 @app.route('/upload', methods=['POST'])
@@ -167,11 +169,14 @@ def generate_report():
         report_dir = app.config['REPORTS_FOLDER'] / timestamp
         report_dir.mkdir(exist_ok=True)
 
+        enable_web_research = options.get('enable_web_research') if 'enable_web_research' in options else None
+
         generator = ReportGenerator(
             analysis,
             str(report_dir),
             source_records=result['data'],
-            enable_llm=True
+            enable_llm=True,
+            enable_web_research=enable_web_research
         )
 
         generated_files = {}
@@ -187,12 +192,17 @@ def generate_report():
         # Generate PDF if requested
         if options.get('generate_pdf', True):
             try:
-                pdf_path = generator.generate_pdf_report()
-                generated_files['pdf'] = str(Path(pdf_path).name)
+                pdf_paths = generator.generate_dual_pdf_reports()
+                generated_files['pdf_intelligence'] = str(Path(pdf_paths['pdf_intelligence']).name)
+                generated_files['pdf_narrative'] = str(Path(pdf_paths['pdf_narrative']).name)
             except ImportError:
                 generated_files['pdf_error'] = 'reportlab not installed'
 
         # Generate JSON
+        web_summary = generator.export_web_research()
+        if web_summary:
+            generated_files['web_research'] = str(Path(web_summary).name)
+
         json_path = generator.export_json_report()
         generated_files['json'] = str(Path(json_path).name)
 
@@ -207,7 +217,8 @@ def generate_report():
             'success': True,
             'report_id': timestamp,
             'files': generated_files,
-            'ai_report': ai_payload
+            'ai_report': ai_payload,
+            'web_research': generator.get_web_research_results()
         })
 
     except Exception as e:

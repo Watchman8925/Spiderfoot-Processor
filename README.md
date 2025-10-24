@@ -22,7 +22,7 @@ This plugin pack extends SpiderFoot's OSINT capabilities to identify potential c
 - **CSV Import**: Upload and process SpiderFoot CSV export files
 - **Advanced Analysis**: Analyze patterns, trends, and correlations in your data
 - **Visualization**: Generate charts and graphs for better insights
-- **PDF Reports**: Create professional PDF reports with findings and recommendations
+- **PDF Reports**: Create professional intelligence and narrative exposé PDFs with findings, provenance, and recommendations
 - **Filtering & Search**: Filter by event types, modules, or search for specific keywords
 
 ## Quick Start
@@ -156,13 +156,43 @@ python spiderfoot_processor.py your_export.csv --filter-type HIGH_RISK_DOMAIN -e
 ```
 
 The processor will generate:
+
 - **Charts**: Visual representations of event distribution, module activity, and threat overview
 - **PDF Report**: Comprehensive report with executive summary, visualizations, detailed findings, and recommendations
 - **JSON Export**: Machine-readable analysis results (optional with `--json` flag)
 
+## AI-Assisted Reporting
+
+Set these environment variables before launching the web app or CLI if you want the AI-generated narrative:
+
+- `SPIDERFOOT_LLM_MODEL` and `SPIDERFOOT_LLM_API_KEY` (required)
+- `SPIDERFOOT_LLM_BASE_URL`, `SPIDERFOOT_LLM_PROVIDER`, `SPIDERFOOT_LLM_ORG` (optional, provider specific)
+- `SPIDERFOOT_LLM_SYSTEM_PROMPT` or `SPIDERFOOT_LLM_SYSTEM_PROMPT_FILE` to supply a custom system prompt
+- `SPIDERFOOT_LLM_USER_INSTRUCTIONS` (or `_FILE`) to prepend extra guidance before the JSON payload
+- `SPIDERFOOT_LLM_FALLBACK_MODEL` (with optional `_FALLBACK_SYSTEM_PROMPT`) to specify a backup model if the primary fails
+- `SPIDERFOOT_LLM_MAX_SAMPLE_RECORDS` to control how many raw records are shared with the model (default 50)
+
+The processor automatically passes a trimmed snapshot of the uploaded CSV along with key analysis results to the model you configure. A forensic intelligence prompt is preloaded by default; you can override it via the variables above. When no API credentials are provided (or the remote call fails), the system falls back to an embedded narrative engine that still produces provenance-backed reports—so AI output is available even in fully offline environments.
+
+### Optional Web Research Enrichment
+
+Some investigations benefit from quick open-source context on high-priority findings. The processor now includes an optional enrichment pass that performs throttled DuckDuckGo lookups for the most salient domains, IP addresses, and entity strings found in your dataset. Results are stored in `web_research_*.json`, fed into the AI narrative, and surfaced in the web UI downloads panel.
+
+- Enable at runtime via the CLI flag `--enable-web-research`, the web UI checkbox “Enrich with Web Research,” or by exporting `SPIDERFOOT_WEB_SEARCH_ENABLED=true`.
+- Fine-tune behaviour with:
+   - `SPIDERFOOT_WEB_SEARCH_PROVIDER` (currently `duckduckgo`)
+   - `SPIDERFOOT_WEB_SEARCH_TIMEOUT` (seconds, default 10)
+   - `SPIDERFOOT_WEB_SEARCH_MAX_RESULTS` (per query, default 3)
+   - `SPIDERFOOT_WEB_SEARCH_MAX_QUERIES` (overall cap, default 8)
+   - `SPIDERFOOT_WEB_SEARCH_THROTTLE_SECONDS` (delay between queries, default 1.0)
+   - `SPIDERFOOT_WEB_SEARCH_USER_AGENT` (custom user-agent string)
+
+⚠️ This feature is off by default to preserve offline operation. When enabled it requires outbound HTTPS access and adheres to the configured throttling limits to avoid hammering remote services.
+
 ### Event Types Processed
 
 The plugin watches for these SpiderFoot event types:
+
 - `EMAILADDR` - Email addresses
 - `DOMAIN_NAME` - Domain names
 - `IP_ADDRESS` - IP addresses
@@ -176,6 +206,7 @@ The plugin watches for these SpiderFoot event types:
 ### Event Types Produced
 
 The plugin generates these event types:
+
 - `CORRUPTION_INDICATOR` - Detected corruption indicators
 - `TOC_INDICATOR` - Threat of compromise indicators
 - `MALICIOUS_AFFILIATE` - Potentially malicious affiliates
@@ -188,6 +219,7 @@ The plugin generates these event types:
 ### Example 1: Investigating a Domain
 
 When analyzing a domain, the plugin will:
+
 - Check for suspicious TLDs (e.g., .xyz, .tk)
 - Identify potential phishing terms (e.g., "secure", "login", "verify")
 - Analyze associated content for corruption/TOC keywords
@@ -195,6 +227,7 @@ When analyzing a domain, the plugin will:
 ### Example 2: Processing Breach Data
 
 When processing breach data, the plugin will:
+
 - Scan content for corruption-related keywords
 - Identify threat of compromise indicators
 - Generate appropriate events for downstream processing
@@ -226,4 +259,4 @@ This tool is for legitimate security research and OSINT investigations only. Use
 ## Support
 
 For issues, questions, or contributions, please visit:
-https://github.com/Watchman8925/Spiderfoot-Processor
+<https://github.com/Watchman8925/Spiderfoot-Processor>

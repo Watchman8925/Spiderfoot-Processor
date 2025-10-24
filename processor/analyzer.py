@@ -359,6 +359,12 @@ class SpiderFootAnalyzer:
             'compromised_assets': self.analyze_compromised_assets(),
             'timeline': self.generate_timeline()
         }
+        source_files = {row.get('__source_file') for row in self.data if row.get('__source_file')}
+        if source_files:
+            results['summary']['source_filename'] = ', '.join(sorted(source_files))
+        source_paths = {row.get('__source_path') for row in self.data if row.get('__source_path')}
+        if source_paths:
+            results['summary']['source_paths'] = list(sorted(source_paths))
         results['pivots_and_leads'] = self.identify_pivots_and_leads(results)
         self.analysis_results = results
         return results

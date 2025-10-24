@@ -11,9 +11,20 @@
 # -------------------------------------------------------------------------------
 
 import json
-from pathlib import Path
-from typing import Dict, List, Any, Optional
+import re
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+from processor.web_research import (
+    WebResearchClient,
+    WebResearchConfig,
+    WebResearchError,
+    summarise_web_research,
+)
+
+IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+DOMAIN_PATTERN = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b")
 
 try:
     import matplotlib
@@ -37,17 +48,18 @@ except ImportError:
 
 try:
     from processor.llm_client import (
-        LLMReportBuilder,
+        BaseReportBuilder,
         LLMReportError,
         LLMReportResult,
+        resolve_llm_builder,
     )
     HAS_LLM = True
 except ImportError:  # Optional dependency
-    LLMReportBuilder = None  # type: ignore
+    BaseReportBuilder = None  # type: ignore
     LLMReportError = None  # type: ignore
     LLMReportResult = None  # type: ignore
+    resolve_llm_builder = None  # type: ignore
     HAS_LLM = False
-
 
 class ReportGenerator:
     """Generate visual reports and PDF documents from SpiderFoot analysis."""
@@ -57,7 +69,8 @@ class ReportGenerator:
         analysis_data: Dict[str, Any],
         output_dir: str = "./reports",
         source_records: Optional[List[Dict[str, Any]]] = None,
-        enable_llm: bool = True
+        enable_llm: bool = True,
+        enable_web_research: Optional[bool] = None,
     ):
         """
         Initialize the report generator.
@@ -67,6 +80,7 @@ class ReportGenerator:
             output_dir: Directory to save reports (default: ./reports)
             source_records: Optional raw records to enrich AI narratives
             enable_llm: Whether to attempt LLM-assisted reporting
+            enable_web_research: Override for web search enrichment (default: env driven)
         """
         self.analysis_data = analysis_data
         self.output_dir = Path(output_dir)
@@ -79,6 +93,13 @@ class ReportGenerator:
         self._llm_markdown_path = None
         self._llm_attempted = False
         self._llm_error = None
+
+        self._web_research_config = WebResearchConfig.from_environment(enable_web_research)
+        self.enable_web_research = self._web_research_config.enabled
+        self._web_research_client: Optional[WebResearchClient] = None
+        self._web_research_attempted = False
+        self._web_research_results: Optional[Dict[str, Any]] = None
+        self._web_research_error: Optional[str] = None
 
     def generate_event_distribution_chart(self, output_path: Optional[str] = None) -> str:
         """
@@ -134,7 +155,6 @@ class ReportGenerator:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
 
-        self.charts.append(str(output_path))
         return str(output_path)
 
     def generate_module_activity_chart(self, output_path: Optional[str] = None) -> str:
@@ -180,7 +200,6 @@ class ReportGenerator:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
 
-        self.charts.append(str(output_path))
         return str(output_path)
 
     def generate_threat_overview_chart(self, output_path: Optional[str] = None) -> str:
@@ -232,7 +251,6 @@ class ReportGenerator:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
 
-        self.charts.append(str(output_path))
         return str(output_path)
 
     def generate_all_charts(self) -> List[str]:
@@ -242,12 +260,14 @@ class ReportGenerator:
         Returns:
             List of paths to generated charts
         """
-        charts = []
+        charts: List[str] = []
+        self.charts = []
 
         try:
             chart = self.generate_event_distribution_chart()
             if chart:
                 charts.append(chart)
+                self.charts.append(chart)
         except Exception as e:
             print(f"Warning: Could not generate event distribution chart: {e}")
 
@@ -255,6 +275,7 @@ class ReportGenerator:
             chart = self.generate_module_activity_chart()
             if chart:
                 charts.append(chart)
+                self.charts.append(chart)
         except Exception as e:
             print(f"Warning: Could not generate module activity chart: {e}")
 
@@ -262,12 +283,13 @@ class ReportGenerator:
             chart = self.generate_threat_overview_chart()
             if chart:
                 charts.append(chart)
+                self.charts.append(chart)
         except Exception as e:
             print(f"Warning: Could not generate threat overview chart: {e}")
 
         return charts
 
-    def _ensure_llm_builder(self) -> Optional[Any]:
+    def _ensure_llm_builder(self) -> Optional["BaseReportBuilder"]:
         """Initialise the LLM builder if configuration and dependencies permit."""
         if not self.enable_llm or not HAS_LLM:
             return None
@@ -276,13 +298,155 @@ class ReportGenerator:
         if self._llm_error:
             return None
         try:
-            self._llm_builder = LLMReportBuilder.from_environment()
+            self._llm_builder = resolve_llm_builder()
         except LLMReportError as exc:
             self._llm_error = str(exc)
             self.enable_llm = False
             print(f"  ! LLM reporting disabled: {exc}")
             self._llm_builder = None
         return self._llm_builder
+
+    def _ensure_web_research_client(self) -> Optional[WebResearchClient]:
+        """Initialise the web research client if enabled."""
+        if not self.enable_web_research:
+            return None
+        if self._web_research_client is not None:
+            return self._web_research_client
+        try:
+            self._web_research_client = WebResearchClient(self._web_research_config)
+        except WebResearchError as exc:
+            self._web_research_error = str(exc)
+            self.enable_web_research = False
+            print(f"  ! Web research disabled: {exc}")
+            self._web_research_client = None
+        return self._web_research_client
+
+    def _extract_entities(self, text: str) -> List[str]:
+        """Extract IP addresses and domain names from free text."""
+        entities: List[str] = []
+        if not text:
+            return entities
+        for match in IP_PATTERN.findall(text):
+            entities.append(match)
+        for match in DOMAIN_PATTERN.findall(text.lower()):
+            entities.append(match.lower())
+        return entities
+
+    def _add_candidate(self, candidate: str, targets: List[str], seen: Set[str]) -> None:
+        cleaned = (candidate or "").strip()
+        if not cleaned:
+            return
+        cleaned = cleaned.strip(".,;:'\"()[]{}<>")
+        if not cleaned:
+            return
+        dedupe = cleaned.lower()
+        if IP_PATTERN.fullmatch(cleaned):
+            dedupe = cleaned
+        elif DOMAIN_PATTERN.fullmatch(cleaned.lower()):
+            cleaned = cleaned.lower()
+            dedupe = cleaned
+        if dedupe in seen:
+            return
+        seen.add(dedupe)
+        targets.append(cleaned)
+
+    def _build_web_research_targets(self) -> List[str]:
+        """Derive a concise set of entities to enrich via web lookups."""
+        client = self._ensure_web_research_client()
+        if client is None:
+            return []
+
+        max_queries = max(1, client.config.max_queries)
+        targets: List[str] = []
+        seen: Set[str] = set()
+
+        risk_domains = self.analysis_data.get('risk_domains', {})
+        for domain in (risk_domains.get('domains') or [])[:max_queries]:
+            self._add_candidate(domain, targets, seen)
+            if len(targets) >= max_queries:
+                return targets
+
+        for domain in (risk_domains.get('domain_details') or {}).keys():
+            self._add_candidate(domain, targets, seen)
+            if len(targets) >= max_queries:
+                return targets
+
+        compromised = self.analysis_data.get('compromised_assets', {})
+        for source in (compromised.get('sources') or [])[:max_queries]:
+            self._add_candidate(source, targets, seen)
+            if len(targets) >= max_queries:
+                return targets
+
+        for label in (compromised.get('asset_details') or {}).keys():
+            self._add_candidate(label, targets, seen)
+            if len(targets) >= max_queries:
+                return targets
+
+        pivot_items = self.analysis_data.get('pivots_and_leads', []) or []
+        for pivot in pivot_items:
+            for field in ('title', 'summary'):
+                text = pivot.get(field)
+                for entity in self._extract_entities(str(text)):
+                    self._add_candidate(entity, targets, seen)
+                    if len(targets) >= max_queries:
+                        return targets
+
+        for record in self.source_records:
+            for key in ('Source', 'Data'):
+                value = record.get(key)
+                for entity in self._extract_entities(str(value)):
+                    self._add_candidate(entity, targets, seen)
+                    if len(targets) >= max_queries:
+                        return targets
+
+        return targets[:max_queries]
+
+    def _perform_web_research(self) -> Optional[Dict[str, Any]]:
+        """Execute web lookups to gather supplementary context."""
+        if self._web_research_attempted:
+            return self._web_research_results
+
+        self._web_research_attempted = True
+        client = self._ensure_web_research_client()
+        if client is None:
+            if self._web_research_error and 'web_research' not in self.analysis_data:
+                self.analysis_data['web_research'] = {'errors': [{'message': self._web_research_error}]}
+            return None
+
+        targets = self._build_web_research_targets()
+        if not targets:
+            self._web_research_results = {}
+            return self._web_research_results
+
+        raw_results = client.bulk_search(targets)
+        summary = summarise_web_research(raw_results, client.provider_name)
+        if not summary.get('queries') and not summary.get('errors'):
+            self._web_research_results = {}
+        else:
+            self._web_research_results = summary
+            self.analysis_data['web_research'] = summary
+        return self._web_research_results
+
+    def get_web_research_results(self) -> Optional[Dict[str, Any]]:
+        """Expose cached web research results to callers."""
+        return self._perform_web_research()
+
+    def export_web_research(self, output_path: Optional[str] = None) -> Optional[str]:
+        """Persist web research findings for review."""
+        results = self._perform_web_research()
+        if not results:
+            return None
+
+        if output_path is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = self.output_dir / f"web_research_{timestamp}.json"
+        else:
+            output_path = Path(output_path)
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as handle:
+            json.dump(results, handle, indent=2, default=str)
+        return str(output_path)
 
     def _maybe_generate_llm_report(self) -> Optional[Any]:
         """Generate or retrieve a cached LLM narrative."""
@@ -294,6 +458,12 @@ class ReportGenerator:
         builder = self._ensure_llm_builder()
         if builder is None:
             return None
+
+        web_context = self._perform_web_research()
+        if web_context:
+            self.analysis_data['web_research'] = web_context
+        elif self._web_research_error and 'web_research' not in self.analysis_data:
+            self.analysis_data['web_research'] = {'errors': [{'message': self._web_research_error}]}
 
         try:
             self._llm_report = builder.generate_report(self.analysis_data, self.source_records)
@@ -413,37 +583,44 @@ class ReportGenerator:
             return llm_report.to_dict()
         return None
 
-    def generate_pdf_report(self, output_path: Optional[str] = None,
-                           title: str = "SpiderFoot TOC/Corruption Analysis Report") -> str:
-        """
-        Generate a comprehensive PDF report.
+    def generate_pdf_report(
+        self,
+        output_path: Optional[str] = None,
+        title: str = "SpiderFoot TOC/Corruption Analysis Report",
+        report_mode: str = "intelligence"
+    ) -> str:
+        """Generate a PDF report in either intelligence or narrative style."""
 
-        Args:
-            output_path: Optional specific output path
-            title: Report title
-
-        Returns:
-            Path to the generated PDF
-        """
         if not HAS_REPORTLAB:
             raise ImportError("reportlab is required for PDF generation. Install with: pip install reportlab")
 
+        report_mode = report_mode.lower()
+        if report_mode not in {"intelligence", "narrative"}:
+            raise ValueError("report_mode must be 'intelligence' or 'narrative'")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if output_path is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = self.output_dir / f"report_{timestamp}.pdf"
+            filename = (
+                f"intelligence_report_{timestamp}.pdf"
+                if report_mode == "intelligence"
+                else f"narrative_expose_{timestamp}.pdf"
+            )
+            output_path = self.output_dir / filename
+        else:
+            output_path = Path(output_path)
 
         # Attempt to prepare AI narrative (non-blocking on failure)
         llm_report = self._maybe_generate_llm_report()
 
-        # Generate charts first
-        chart_paths = self.generate_all_charts()
+        # Generate or reuse charts depending on mode
+        if report_mode == "intelligence":
+            chart_paths = self.charts if self.charts else self.generate_all_charts()
+        else:
+            chart_paths = self.charts if self.charts else self.generate_all_charts()
 
-        # Create PDF
         doc = SimpleDocTemplate(str(output_path), pagesize=letter)
-        story = []
         styles = getSampleStyleSheet()
 
-        # Custom styles
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
@@ -452,7 +629,6 @@ class ReportGenerator:
             spaceAfter=30,
             alignment=TA_CENTER
         )
-
         heading_style = ParagraphStyle(
             'CustomHeading',
             parent=styles['Heading2'],
@@ -461,7 +637,6 @@ class ReportGenerator:
             spaceAfter=12,
             spaceBefore=12
         )
-
         body_style = ParagraphStyle(
             'CustomBody',
             parent=styles['BodyText'],
@@ -469,7 +644,6 @@ class ReportGenerator:
             leading=14,
             spaceAfter=6
         )
-
         narrative_heading_style = ParagraphStyle(
             'NarrativeHeading',
             parent=styles['Heading3'],
@@ -479,22 +653,62 @@ class ReportGenerator:
             spaceAfter=6
         )
 
+        report_title = title
+        if report_mode == "narrative" and title == "SpiderFoot TOC/Corruption Analysis Report":
+            report_title = "SpiderFoot Investigative Exposé"
+
+        if report_mode == "intelligence":
+            story = self._build_intelligence_story(
+                report_title,
+                llm_report,
+                chart_paths,
+                styles,
+                title_style,
+                heading_style,
+                body_style,
+                narrative_heading_style,
+            )
+        else:
+            story = self._build_narrative_story(
+                report_title,
+                llm_report,
+                chart_paths,
+                styles,
+                title_style,
+                heading_style,
+                body_style,
+                narrative_heading_style,
+            )
+
+        doc.build(story)
+        return str(output_path)
+
+    def _build_intelligence_story(
+        self,
+        report_title: str,
+        llm_report: Optional[Any],
+        chart_paths: List[str],
+        styles,
+        title_style,
+        heading_style,
+        body_style,
+        narrative_heading_style,
+    ) -> List[Any]:
         accent_header_color = colors.HexColor('#0f172a')
         accent_body_color = colors.HexColor('#d1fae5')
 
-        # Title page
-        story.append(Paragraph(title, title_style))
+        story: List[Any] = []
+        story.append(Paragraph(report_title, title_style))
         story.append(Spacer(1, 0.3*inch))
 
-        # Report metadata
+        summary = self.analysis_data.get('summary', {})
         metadata_text = f"""
         <b>Generated:</b> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}<br/>
-        <b>Total Records:</b> {self.analysis_data.get('summary', {}).get('total_records', 0)}<br/>
+        <b>Total Records:</b> {summary.get('total_records', 0)}<br/>
         """
         story.append(Paragraph(metadata_text, styles['Normal']))
         story.append(Spacer(1, 0.5*inch))
 
-        # Executive Summary
         story.append(Paragraph("Executive Summary", heading_style))
 
         summary_data = self._generate_summary_table()
@@ -513,21 +727,17 @@ class ReportGenerator:
             story.append(summary_table)
         story.append(PageBreak())
 
-        # Charts section
         if chart_paths:
             story.append(Paragraph("Visual Analysis", heading_style))
-
             for chart_path in chart_paths:
                 try:
                     img = Image(chart_path, width=6*inch, height=3.5*inch)
                     story.append(img)
                     story.append(Spacer(1, 0.3*inch))
-                except Exception as e:
-                    print(f"Warning: Could not add chart to PDF: {e}")
-
+                except Exception as exc:
+                    print(f"Warning: Could not add chart to PDF: {exc}")
             story.append(PageBreak())
 
-        # Detailed findings
         story.append(Paragraph("Detailed Findings", heading_style))
 
         if llm_report:
@@ -535,18 +745,27 @@ class ReportGenerator:
         else:
             story.append(self._generate_findings_content(styles))
 
-        # Deterministic pivots from analysis
         pivots = self.analysis_data.get('pivots_and_leads', [])
-        story.extend(self._build_pivots_section(pivots[:10], body_style, narrative_heading_style,
-                                                title="Analytical Pivots & Leads"))
+        story.extend(
+            self._build_pivots_section(
+                pivots[:10],
+                body_style,
+                narrative_heading_style,
+                title="Analytical Pivots & Leads"
+            )
+        )
 
-        # AI pivot enrichment
         if llm_report and llm_report.pivots_and_leads:
             ai_pivots = [lead.to_dict() for lead in llm_report.pivots_and_leads]
-            story.extend(self._build_pivots_section(ai_pivots[:10], body_style, narrative_heading_style,
-                                                    title="AI-Identified Strategic Leads"))
+            story.extend(
+                self._build_pivots_section(
+                    ai_pivots[:10],
+                    body_style,
+                    narrative_heading_style,
+                    title="AI-Identified Strategic Leads"
+                )
+            )
 
-        # Recommendations
         story.append(PageBreak())
         story.append(Paragraph("Recommendations", heading_style))
         story.append(self._generate_recommendations_content(styles))
@@ -557,9 +776,127 @@ class ReportGenerator:
                 story.append(Paragraph(f"• {recommendation}", body_style))
             story.append(Spacer(1, 0.2*inch))
 
-        # Build PDF
-        doc.build(story)
-        return str(output_path)
+        return story
+
+    def _build_narrative_story(
+        self,
+        report_title: str,
+        llm_report: Optional[Any],
+        chart_paths: List[str],
+        styles,
+        title_style,
+        heading_style,
+        body_style,
+        narrative_heading_style,
+    ) -> List[Any]:
+        story: List[Any] = []
+        summary = self.analysis_data.get('summary', {})
+
+        story.append(Paragraph(report_title, title_style))
+        story.append(Spacer(1, 0.3*inch))
+
+        dataset_label = summary.get('source_filename') or 'Uploaded CSV'
+        metadata_lines = [
+            f"<b>Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"<b>Source Dataset:</b> {dataset_label}",
+            f"<b>Total Records:</b> {summary.get('total_records', 0)}"
+        ]
+        if summary.get('analysis_timestamp'):
+            metadata_lines.append(f"<b>Analysis Timestamp:</b> {summary['analysis_timestamp']}")
+        story.append(Paragraph("<br/>".join(metadata_lines), styles['Normal']))
+        story.append(Spacer(1, 0.4*inch))
+
+        story.append(Paragraph("Narrative Overview", heading_style))
+        if llm_report and llm_report.executive_summary:
+            for paragraph in self._split_into_paragraphs(llm_report.executive_summary):
+                story.append(Paragraph(paragraph, body_style))
+                story.append(Spacer(1, 0.12*inch))
+        else:
+            story.append(Paragraph("No AI narrative was produced; documenting analytic summary instead.", body_style))
+            story.append(self._generate_findings_content(styles))
+        story.append(Spacer(1, 0.2*inch))
+
+        sections = llm_report.narrative_sections if llm_report else []
+        if sections:
+            for idx, section in enumerate(sections, start=1):
+                title_text = section.get('title') or f"Section {idx}"
+                story.append(Paragraph(f"{idx}. {title_text}", narrative_heading_style))
+                content = section.get('content') or section.get('body') or ''
+                for paragraph in self._split_into_paragraphs(content):
+                    story.append(Paragraph(paragraph, body_style))
+                    story.append(Spacer(1, 0.1*inch))
+        else:
+            story.append(Paragraph("No narrative sections available; falling back to core findings.", body_style))
+            story.append(self._generate_findings_content(styles))
+
+        story.append(PageBreak())
+
+        def _to_dict(lead: Any) -> Dict[str, Any]:
+            if hasattr(lead, 'to_dict'):
+                return lead.to_dict()
+            if isinstance(lead, dict):
+                return lead
+            return {}
+
+        pivot_leads_raw: List[Any] = []
+        if llm_report and llm_report.pivots_and_leads:
+            pivot_leads_raw = llm_report.pivots_and_leads
+        elif self.analysis_data.get('pivots_and_leads'):
+            pivot_leads_raw = self.analysis_data.get('pivots_and_leads', [])
+
+        if pivot_leads_raw:
+            story.append(Paragraph("Evidence Ledger", heading_style))
+            evidence_seen: List[str] = []
+            for raw_lead in pivot_leads_raw:
+                lead_dict = _to_dict(raw_lead)
+                lead_title = lead_dict.get('title') or lead_dict.get('indicator') or 'Lead'
+                confidence = lead_dict.get('confidence', 'Not rated')
+                story.append(Paragraph(f"{lead_title} — Confidence: {confidence}", narrative_heading_style))
+                if lead_dict.get('summary'):
+                    story.append(Paragraph(lead_dict['summary'], body_style))
+                if lead_dict.get('rationale'):
+                    story.append(Paragraph(f"Why it matters: {lead_dict['rationale']}", body_style))
+                if lead_dict.get('recommended_actions'):
+                    story.append(Paragraph(f"Next Steps: {lead_dict['recommended_actions']}", body_style))
+
+                evidence_items = lead_dict.get('supporting_evidence') or []
+                if evidence_items:
+                    for evidence in evidence_items:
+                        story.append(Paragraph(f"• {evidence}", body_style))
+                        if evidence and evidence not in evidence_seen:
+                            evidence_seen.append(evidence)
+                story.append(Spacer(1, 0.15*inch))
+
+            if evidence_seen:
+                story.append(PageBreak())
+                story.append(Paragraph("Supporting Evidence Index", heading_style))
+                for evidence in evidence_seen:
+                    story.append(Paragraph(f"• {evidence}", body_style))
+                story.append(Spacer(1, 0.2*inch))
+
+        timeline = self.analysis_data.get('timeline', {})
+        if timeline.get('has_timeline'):
+            story.append(Paragraph("Timeline Highlights", heading_style))
+            events = timeline.get('events_by_date', {})
+            if events:
+                for date, count in list(events.items())[:10]:
+                    story.append(Paragraph(f"• {date}: {count} recorded events", body_style))
+            else:
+                story.append(Paragraph("Timestamp data detected but no aggregation was available.", body_style))
+            story.append(Spacer(1, 0.2*inch))
+
+        if chart_paths:
+            story.append(PageBreak())
+            story.append(Paragraph("Visual Context", heading_style))
+            for chart_path in chart_paths:
+                try:
+                    img = Image(chart_path, width=6*inch, height=3.5*inch)
+                    story.append(img)
+                    story.append(Spacer(1, 0.3*inch))
+                except Exception as exc:
+                    print(f"Warning: Could not add chart to PDF: {exc}")
+
+        return story
 
     def _generate_summary_table(self) -> List[List[str]]:
         """Generate summary statistics table data."""
@@ -647,11 +984,21 @@ class ReportGenerator:
 
         return str(output_path)
 
+    def generate_dual_pdf_reports(self) -> Dict[str, str]:
+        """Generate both intelligence and narrative style PDFs."""
+        intelligence_path = self.generate_pdf_report(report_mode='intelligence')
+        narrative_path = self.generate_pdf_report(report_mode='narrative')
+        return {
+            'pdf_intelligence': intelligence_path,
+            'pdf_narrative': narrative_path,
+        }
+
 
 def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports",
                    generate_pdf: bool = True, generate_charts: bool = True,
                    source_records: Optional[List[Dict[str, Any]]] = None,
-                   enable_llm: bool = True) -> Dict[str, Any]:
+                   enable_llm: bool = True,
+                   enable_web_research: Optional[bool] = None) -> Dict[str, Any]:
     """
     Convenience function to generate reports.
 
@@ -662,6 +1009,7 @@ def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports"
         generate_charts: Whether to generate charts
         source_records: Optional raw records for richer AI narratives
         enable_llm: Whether to attempt LLM-assisted reporting
+        enable_web_research: Override for web search enrichment (default: env driven)
 
     Returns:
         Dictionary with generated artefact paths and optional AI payload
@@ -670,7 +1018,8 @@ def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports"
         analysis_data,
         output_dir,
         source_records=source_records,
-        enable_llm=enable_llm
+        enable_llm=enable_llm,
+        enable_web_research=enable_web_research,
     )
     results = {}
 
@@ -684,11 +1033,16 @@ def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports"
 
     if generate_pdf:
         try:
-            pdf_path = generator.generate_pdf_report()
-            results['pdf'] = pdf_path
+            pdf_paths = generator.generate_dual_pdf_reports()
+            results.update(pdf_paths)
         except ImportError as e:
             print(f"Warning: Could not generate PDF: {e}")
-            results['pdf'] = None
+            results['pdf_intelligence'] = None
+            results['pdf_narrative'] = None
+
+    web_research_path = generator.export_web_research()
+    if web_research_path:
+        results['web_research'] = web_research_path
 
     # Always generate JSON
     json_path = generator.export_json_report()

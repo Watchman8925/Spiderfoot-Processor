@@ -57,10 +57,15 @@ class SpiderFootCSVImporter:
         with open(filepath, 'r', encoding=encoding, errors='replace') as f:
             reader = csv.DictReader(f)
 
-            # Store the fieldnames for later use
+            # Store the fieldnames and provenance for later use
             self.metadata['fieldnames'] = reader.fieldnames
+            self.metadata['source_filename'] = filepath.name
+            self.metadata['source_path'] = str(filepath)
 
-            for row in reader:
+            for index, row in enumerate(reader, start=2):  # start=2 accounts for header row
+                row['__row_number'] = index
+                row['__source_file'] = filepath.name
+                row['__source_path'] = str(filepath)
                 self.data.append(row)
                 self.stats['total_records'] += 1
 
@@ -159,12 +164,20 @@ class SpiderFootCSVImporter:
             raise ValueError("No data to export")
 
         output_path = Path(output_path)
-        fieldnames = self.metadata.get('fieldnames', filtered_data[0].keys())
+        fieldnames = [
+            name for name in self.metadata.get('fieldnames', filtered_data[0].keys())
+            if not str(name).startswith('__')
+        ]
+
+        sanitized_rows = [
+            {key: value for key, value in row.items() if not str(key).startswith('__')}
+            for row in filtered_data
+        ]
 
         with open(output_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(filtered_data)
+            writer.writerows(sanitized_rows)
 
     def get_summary(self) -> Dict[str, Any]:
         """

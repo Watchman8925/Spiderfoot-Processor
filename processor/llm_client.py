@@ -8,6 +8,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import importlib
 
@@ -24,6 +25,35 @@ class LLMReportError(RuntimeError):
     """Raised when LLM report generation fails or is misconfigured."""
 
 
+FORENSIC_SYSTEM_PROMPT = (
+    "You are a forensic intelligence analyst LLM. Your job is to analyze uploaded "
+    "SpiderFoot CSV exports and produce full-length, evidence-based intelligence "
+    "reports and investigative journalism narratives. You must:\n\n"
+    "- Parse and normalize all data\n"
+    "- Detect entities, resolve duplicates, and construct a relationship graph\n"
+    "- Identify hidden connections, suspicious patterns, and TOC-corruption indicators\n"
+    "- List exact SpiderFoot rows (filename:row:column) supporting every claim\n"
+    "- Produce two PDFs:\n"
+    "  1. An intelligence report (structured, with provenance)\n"
+    "  2. A narrative investigative exposé (journalistic style)\n\n"
+    "Every claim must be traceable. Do not hallucinate. If no evidence exists, state so. "
+    "Highlight red flags, typologies, and jurisdictional risks. Graphs and timelines must "
+    "match your analysis. Do not omit source details."
+)
+
+DEFAULT_SYSTEM_PROMPT = (
+    f"{FORENSIC_SYSTEM_PROMPT}\n\n"
+    "You are an elite intelligence analyst building a comprehensive "
+    "investigative report based on OSINT-derived SpiderFoot findings. "
+    "Produce a JSON object with these keys: executive_summary (string), "
+    "detailed_report (list of sections with title/content), pivots "
+    "(list of leads with title, summary, rationale, recommended_actions, "
+    "confidence, supporting_evidence), strategic_recommendations (list of strings). "
+    "The combined narrative should approximate 30 pages (target 350+ words per section). "
+    "Make pivots actionable and explain why each matters."
+)
+
+
 @dataclass
 class LLMReportConfig:
     """Configuration container for LLM report generation."""
@@ -36,6 +66,11 @@ class LLMReportConfig:
     temperature: float = 0.2
     max_output_tokens: int = 8192
     top_p: Optional[float] = None
+    system_prompt: Optional[str] = None
+    user_prompt_prefix: Optional[str] = None
+    fallback_model: Optional[str] = None
+    fallback_system_prompt: Optional[str] = None
+    max_sample_records: int = 50
 
     @classmethod
     def from_environment(cls) -> "LLMReportConfig":
@@ -68,6 +103,31 @@ class LLMReportConfig:
         top_p_env = os.getenv("SPIDERFOOT_LLM_TOP_P") or os.getenv("LLM_TOP_P")
         top_p = float(top_p_env) if top_p_env else None
 
+        system_prompt = cls._load_prompt("SPIDERFOOT_LLM_SYSTEM_PROMPT", "SPIDERFOOT_LLM_SYSTEM_PROMPT_FILE")
+        user_prompt_prefix = cls._load_prompt(
+            "SPIDERFOOT_LLM_USER_INSTRUCTIONS", "SPIDERFOOT_LLM_USER_INSTRUCTIONS_FILE"
+        )
+        fallback_model = os.getenv("SPIDERFOOT_LLM_FALLBACK_MODEL") or os.getenv("LLM_FALLBACK_MODEL")
+        fallback_system_prompt = cls._load_prompt(
+            "SPIDERFOOT_LLM_FALLBACK_SYSTEM_PROMPT", "SPIDERFOOT_LLM_FALLBACK_SYSTEM_PROMPT_FILE"
+        )
+
+        max_sample_records_env = (
+            os.getenv("SPIDERFOOT_LLM_MAX_SAMPLE_RECORDS")
+            or os.getenv("LLM_MAX_SAMPLE_RECORDS")
+        )
+        if max_sample_records_env:
+            try:
+                max_sample_records = int(max_sample_records_env)
+            except ValueError as exc:
+                raise LLMReportError(
+                    "LLM sample record limit must be an integer."
+                ) from exc
+            if max_sample_records <= 0:
+                max_sample_records = 50
+        else:
+            max_sample_records = 50
+
         return cls(
             model=model,
             api_key=api_key,
@@ -77,7 +137,27 @@ class LLMReportConfig:
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             top_p=top_p,
+            system_prompt=system_prompt,
+            user_prompt_prefix=user_prompt_prefix,
+            fallback_model=fallback_model or None,
+            fallback_system_prompt=fallback_system_prompt,
+            max_sample_records=max_sample_records,
         )
+
+    @staticmethod
+    def _load_prompt(text_env: str, file_env: str) -> Optional[str]:
+        """Load a prompt either from direct env text or file path."""
+        prompt = os.getenv(text_env)
+        file_path = os.getenv(file_env)
+        if file_path:
+            path = Path(file_path).expanduser()
+            try:
+                prompt = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise LLMReportError(f"Failed to read prompt file '{file_path}': {exc}") from exc
+        if prompt:
+            prompt = prompt.strip()
+        return prompt or None
 
 
 @dataclass
@@ -173,7 +253,19 @@ class LLMReportResult:
         }
 
 
-class LLMReportBuilder:
+class BaseReportBuilder:
+    """Interface for report builders used by the reporting pipeline."""
+
+    def generate_report(
+        self,
+        analysis_data: Dict[str, Any],
+        sample_records: Optional[List[Dict[str, Any]]] = None,
+        target_sections: int = 30,
+    ) -> LLMReportResult:
+        raise NotImplementedError
+
+
+class LLMReportBuilder(BaseReportBuilder):
     """High-level helper to construct detailed reports via LLM."""
 
     def __init__(self, config: LLMReportConfig):
@@ -196,8 +288,25 @@ class LLMReportBuilder:
     ) -> LLMReportResult:
         """Generate a structured long-form report using the configured LLM."""
         payload = self._build_prompt_payload(analysis_data, sample_records, target_sections)
-        response_text, raw_response = self._invoke_llm(payload)
-        structured_payload = self._parse_llm_response(response_text)
+        try:
+            response_text, raw_response = self._invoke_llm(payload)
+            structured_payload = self._parse_llm_response(response_text)
+        except LLMReportError as primary_error:
+            if not self.config.fallback_model:
+                raise
+            try:
+                response_text, raw_response = self._invoke_llm(
+                    payload,
+                    model_override=self.config.fallback_model,
+                    system_prompt_override=self.config.fallback_system_prompt,
+                )
+                structured_payload = self._parse_llm_response(response_text)
+            except LLMReportError as fallback_error:
+                combined_message = (
+                    f"Primary model '{self.config.model}' failed: {primary_error}. "
+                    f"Fallback model '{self.config.fallback_model}' failed: {fallback_error}."
+                )
+                raise LLMReportError(combined_message) from fallback_error
         return self._build_result(structured_payload, raw_response)
 
     def _build_prompt_payload(
@@ -208,7 +317,7 @@ class LLMReportBuilder:
     ) -> Dict[str, Any]:
         """Assemble the contextual payload provided to the LLM."""
         sample_records = sample_records or []
-        trimmed_records = sample_records[:50]  # Prevent runaway context sizes
+        trimmed_records = sample_records[: self.config.max_sample_records]
 
         return {
             "generation_directives": {
@@ -268,32 +377,53 @@ class LLMReportBuilder:
             "timeline": analysis.get("timeline", {}),
             "pivots_and_leads": analysis.get("pivots_and_leads", []),
         }
+
+        web_research = analysis.get("web_research") or {}
+        if web_research:
+            trimmed_queries: List[Dict[str, Any]] = []
+            for item in (web_research.get("queries") or [])[: self.config.max_sample_records // 5 or 5]:
+                trimmed_item = {
+                    "query": item.get("query"),
+                    "fetched_at": item.get("fetched_at"),
+                    "results": (item.get("results") or [])[:3],
+                }
+                trimmed_queries.append(trimmed_item)
+            snapshot["web_research"] = {
+                "provider": web_research.get("provider", "duckduckgo"),
+                "executed_at": web_research.get("executed_at"),
+                "queries": trimmed_queries,
+                "errors": web_research.get("errors", []),
+            }
         return snapshot
 
-    def _invoke_llm(self, payload: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    def _invoke_llm(
+        self,
+        payload: Dict[str, Any],
+        model_override: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
         """Invoke the configured LLM and return raw response data."""
+        system_prompt = system_prompt_override or self.config.system_prompt or DEFAULT_SYSTEM_PROMPT
+
+        user_payload = json.dumps(payload, ensure_ascii=False, indent=2)
+        if self.config.user_prompt_prefix:
+            prefix = self.config.user_prompt_prefix.strip()
+            if prefix:
+                user_payload = f"{prefix}\n\n{user_payload}"
+
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are an elite intelligence analyst building a comprehensive "
-                    "investigative report based on OSINT-derived SpiderFoot findings. "
-                    "Produce a JSON object with these keys: executive_summary (string), "
-                    "detailed_report (list of sections with title/content), pivots "
-                    "(list of leads with title, summary, rationale, recommended_actions, "
-                    "confidence, supporting_evidence), strategic_recommendations (list of strings). "
-                    "The combined narrative should approximate 30 pages (target 350+ words per section). "
-                    "Make pivots actionable and explain why each matters."
-                ),
+                "content": system_prompt,
             },
             {
                 "role": "user",
-                "content": json.dumps(payload, ensure_ascii=False, indent=2),
+                "content": user_payload,
             },
         ]
 
         kwargs: Dict[str, Any] = {
-            "model": self.config.model,
+            "model": model_override or self.config.model,
             "messages": messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_output_tokens,
@@ -409,3 +539,449 @@ class LLMReportBuilder:
             metadata=metadata,
             raw_payload=payload,
         )
+
+
+class LocalLLMReportBuilder(BaseReportBuilder):
+    """Deterministic fallback generator when no external LLM is configured."""
+
+    def __init__(self, system_prompt: str, user_instructions: Optional[str] = None):
+        self.system_prompt = system_prompt.strip() or FORENSIC_SYSTEM_PROMPT
+        self.user_instructions = user_instructions.strip() if user_instructions else None
+
+    @classmethod
+    def from_environment(cls) -> "LocalLLMReportBuilder":
+        system_prompt = (
+            LLMReportConfig._load_prompt(  # pylint: disable=protected-access
+                "SPIDERFOOT_LLM_SYSTEM_PROMPT",
+                "SPIDERFOOT_LLM_SYSTEM_PROMPT_FILE",
+            )
+            or FORENSIC_SYSTEM_PROMPT
+        )
+        user_instructions = LLMReportConfig._load_prompt(  # pylint: disable=protected-access
+            "SPIDERFOOT_LLM_USER_INSTRUCTIONS",
+            "SPIDERFOOT_LLM_USER_INSTRUCTIONS_FILE",
+        )
+        return cls(system_prompt=system_prompt, user_instructions=user_instructions)
+
+    def generate_report(
+        self,
+        analysis_data: Dict[str, Any],
+        sample_records: Optional[List[Dict[str, Any]]] = None,
+        target_sections: int = 12,
+    ) -> LLMReportResult:
+        dataset_label = self._resolve_dataset_label(analysis_data, sample_records)
+        sample_records = sample_records or []
+
+        executive_summary = self._build_executive_summary(analysis_data)
+        narrative_sections = self._build_narrative_sections(
+            analysis_data, sample_records, dataset_label, target_sections
+        )
+        pivots = self._build_pivots(analysis_data, sample_records, dataset_label)
+        recommendations = self._build_recommendations(analysis_data)
+
+        metadata = {
+            "engine": "local-template",
+            "system_prompt": self.system_prompt,
+            "user_instructions": self.user_instructions or "",
+            "sample_records_used": len(sample_records),
+        }
+
+        raw_payload = {
+            "analysis_snapshot": analysis_data,
+            "sample_records": sample_records[:5],
+            "dataset_label": dataset_label,
+        }
+
+        return LLMReportResult(
+            executive_summary=executive_summary,
+            narrative_sections=narrative_sections,
+            pivots_and_leads=pivots,
+            recommendations=recommendations,
+            metadata=metadata,
+            raw_payload=raw_payload,
+        )
+
+    def _resolve_dataset_label(
+        self,
+        analysis_data: Dict[str, Any],
+        sample_records: Optional[List[Dict[str, Any]]],
+    ) -> str:
+        sample_records = sample_records or []
+        summary = analysis_data.get("summary", {})
+        label = (
+            summary.get("source_filename")
+            or summary.get("source_file")
+            or (sample_records[0].get("__source_file") if sample_records else None)
+        )
+        return str(label or "uploaded.csv")
+
+    def _build_executive_summary(self, analysis_data: Dict[str, Any]) -> str:
+        summary = analysis_data.get("summary", {})
+        total_records = summary.get("total_records", 0)
+        total_events = analysis_data.get("event_distribution", {}).get("total_events", 0)
+        corruption_total = analysis_data.get("corruption_patterns", {}).get("total_indicators", 0)
+        toc_total = analysis_data.get("toc_patterns", {}).get("total_indicators", 0)
+        risk_domains = analysis_data.get("risk_domains", {}).get("total_risk_domains", 0)
+        compromised_assets = analysis_data.get("compromised_assets", {}).get("total_compromised", 0)
+
+        lines = [
+            "### Collection Synopsis",
+            f"Dataset contains {total_records:,} SpiderFoot observations spanning {total_events:,} discrete events.",
+            f"Detected {corruption_total:,} corruption indicators and {toc_total:,} threat-of-compromise alerts.",
+            f"Flagged {risk_domains:,} high-risk domains and {compromised_assets:,} potentially compromised assets requiring review.",
+        ]
+
+        timeline = analysis_data.get("timeline", {})
+        if timeline.get("has_timeline") and timeline.get("total_days"):
+            lines.append(
+                f"Timeline coverage spans {timeline['total_days']} days with recorded event activity."
+            )
+
+        web_research = analysis_data.get("web_research") or {}
+        if web_research.get("queries"):
+            lines.append(
+                f"Enriched reporting with {len(web_research['queries'])} open-source query set(s)."
+            )
+
+        return "\n".join(lines).strip()
+
+    def _build_narrative_sections(
+        self,
+        analysis_data: Dict[str, Any],
+        sample_records: List[Dict[str, Any]],
+        dataset_label: str,
+        target_sections: int,
+    ) -> List[Dict[str, str]]:
+        sections: List[Dict[str, str]] = []
+
+        corruption = analysis_data.get("corruption_patterns", {})
+        if corruption.get("total_indicators"):
+            sections.append(
+                {
+                    "title": "Corruption Typologies",
+                    "content": self._compose_section(
+                        dataset_label,
+                        corruption.get("events", []),
+                        topic="Corruption indicators",
+                        keywords=corruption.get("most_common_keywords", []),
+                    ),
+                }
+            )
+
+        toc = analysis_data.get("toc_patterns", {})
+        if toc.get("total_indicators"):
+            sections.append(
+                {
+                    "title": "Threat-of-Compromise Surface",
+                    "content": self._compose_section(
+                        dataset_label,
+                        toc.get("events", []),
+                        topic="Threat-of-compromise signals",
+                        keywords=toc.get("most_common_keywords", []),
+                    ),
+                }
+            )
+
+        risk_domains = analysis_data.get("risk_domains", {})
+        if risk_domains.get("total_risk_domains"):
+            sections.append(
+                {
+                    "title": "High-Risk Domain Footprint",
+                    "content": self._compose_section(
+                        dataset_label,
+                        risk_domains.get("records", []),
+                        topic="High-risk domains",
+                        keywords=list((risk_domains.get("risk_reasons") or {}).keys()),
+                    ),
+                }
+            )
+
+        compromised = analysis_data.get("compromised_assets", {})
+        if compromised.get("total_compromised"):
+            sections.append(
+                {
+                    "title": "Compromised Asset Exposure",
+                    "content": self._compose_section(
+                        dataset_label,
+                        compromised.get("records", []),
+                        topic="Compromised assets and malicious affiliates",
+                        keywords=list((compromised.get("by_type") or {}).keys()),
+                    ),
+                }
+            )
+
+        module_activity = analysis_data.get("module_activity", {})
+        if module_activity.get("most_active"):
+            sections.append(
+                {
+                    "title": "Collection Sources & Modules",
+                    "content": self._build_module_section(module_activity, dataset_label, sample_records),
+                }
+            )
+
+        if analysis_data.get("timeline", {}).get("has_timeline"):
+            sections.append(
+                {
+                    "title": "Temporal Observations",
+                    "content": self._build_timeline_section(analysis_data.get("timeline", {})),
+                }
+            )
+
+        web_research = analysis_data.get("web_research") or {}
+        if web_research:
+            sections.append(
+                {
+                    "title": "Open-Source Context Enrichment",
+                    "content": self._build_web_research_section(web_research),
+                }
+            )
+
+        if not sections:
+            sections.append(
+                {
+                    "title": "Data Sufficiency",
+                    "content": "No investigative signals surfaced in this dataset. Documenting absence of evidence per instructions.",
+                }
+            )
+
+        return sections[: target_sections]
+
+    def _build_web_research_section(self, web_research: Dict[str, Any]) -> str:
+        queries = web_research.get("queries") or []
+        if not queries and not web_research.get("errors"):
+            return "Web search enrichment was enabled but yielded no additional corroborating sources."
+
+        provider = web_research.get("provider", "web search")
+        lines = [f"Supplemental {provider} lookups executed to corroborate investigative pivots."]
+
+        for item in queries[:5]:
+            query = item.get("query", "(query)")
+            results = item.get("results") or []
+            if results:
+                top = results[0]
+                title = top.get("title", "Result")
+                url = top.get("url", "")
+                snippet = top.get("snippet")
+                lines.append(f"- {query}: {title} — {url}")
+                if snippet:
+                    lines.append(f"  {snippet}")
+            else:
+                lines.append(f"- {query}: No authoritative hits returned during sampling.")
+
+        for error in web_research.get("errors", [])[:3]:
+            query = error.get("query", "(query)")
+            messages = error.get("messages") or []
+            if messages:
+                joined = "; ".join(messages)
+                lines.append(f"- {query}: Lookup failed ({joined})")
+
+        return "\n".join(lines).strip()
+
+    def _compose_section(
+        self,
+        dataset_label: str,
+        records: List[Dict[str, Any]],
+        topic: str,
+        keywords: Optional[List[Any]] = None,
+    ) -> str:
+        if not records:
+            return f"No {topic.lower()} identified in the ingested SpiderFoot export."
+
+        references = self._collect_evidence_references(records, dataset_label)
+        keyword_text = ""
+        if keywords:
+            cleaned = [str(keyword[0] if isinstance(keyword, (list, tuple)) else keyword) for keyword in keywords]
+            cleaned = [word for word in cleaned if word]
+            if cleaned:
+                keyword_text = "Top recurring markers: " + ", ".join(cleaned[:8]) + "."
+
+        lines = [keyword_text, "Key supporting evidence:"] if keyword_text else ["Key supporting evidence:"]
+        lines.extend(f"- {ref}" for ref in references)
+        return "\n".join(lines).strip()
+
+    def _collect_evidence_references(
+        self,
+        records: List[Dict[str, Any]],
+        dataset_label: str,
+        limit: int = 5,
+    ) -> List[str]:
+        references: List[str] = []
+        for record in records:
+            raw = record.get("raw") if isinstance(record, dict) else None
+            source = raw if isinstance(raw, dict) else record
+            if not isinstance(source, dict):
+                continue
+            row_number = source.get("__row_number")
+            filename = source.get("__source_file", dataset_label)
+            if not row_number:
+                continue
+            snippet = source.get("Data") or source.get("data") or source.get("Source") or "Context not provided"
+            value_preview = str(snippet).strip()
+            if len(value_preview) > 160:
+                value_preview = value_preview[:157] + "..."
+            for column in ("Type", "Module", "Data"):
+                if column in source:
+                    references.append(
+                        f"{filename}:{row_number}:{column} → {source.get(column)}"
+                    )
+            references.append(f"Excerpt: {value_preview}")
+            if len(references) >= limit:
+                break
+        if not references:
+            references.append(f"No row-level provenance available for {dataset_label}.")
+        return references[:limit]
+
+    def _build_module_section(
+        self,
+        module_activity: Dict[str, Any],
+        dataset_label: str,
+        sample_records: List[Dict[str, Any]],
+    ) -> str:
+        modules = module_activity.get("most_active", [])
+        if not modules:
+            return "No module activity recorded."
+
+        lines = ["Primary collection modules driving the dataset:"]
+        seen = 0
+        for module_name, count in modules[:10]:
+            lines.append(f"- {module_name}: {count} events")
+            seen += 1
+        if seen < len(modules):
+            lines.append(f"- Additional modules: {len(modules) - seen} more with lower volumes")
+
+        if sample_records:
+            references: List[str] = []
+            for row in sample_records:
+                if row.get("Module") and row.get("__row_number"):
+                    references.append(
+                        f"{row.get('__source_file', dataset_label)}:{row['__row_number']}:Module → {row['Module']}"
+                    )
+                if len(references) >= 5:
+                    break
+            if references:
+                lines.append("Representative module provenance:")
+                lines.extend(f"- {ref}" for ref in references)
+
+        return "\n".join(lines)
+
+    def _build_timeline_section(self, timeline: Dict[str, Any]) -> str:
+        if not timeline.get("has_timeline"):
+            return "No timestamp data supplied, timeline omitted."
+
+        by_date = timeline.get("events_by_date", {})
+        if not by_date:
+            return "Timestamps detected but no per-day aggregation available."
+
+        earliest = next(iter(by_date))
+        latest = list(by_date.keys())[-1]
+        lines = [
+            f"Activity recorded from {earliest} to {latest} covering {len(by_date)} days.",
+            "Daily density (top 5 peaks):",
+        ]
+        for date, count in list(by_date.items())[:5]:
+            lines.append(f"- {date}: {count} events")
+        return "\n".join(lines)
+
+    def _build_pivots(
+        self,
+        analysis_data: Dict[str, Any],
+        sample_records: List[Dict[str, Any]],
+        dataset_label: str,
+    ) -> List[PivotLead]:
+        pivots_payload = analysis_data.get("pivots_and_leads") or []
+        results: List[PivotLead] = []
+        for item in pivots_payload[:10]:
+            evidence = item.get("supporting_evidence") or []
+            if not evidence:
+                evidence = self._collect_pivot_evidence(item, sample_records, dataset_label)
+            results.append(
+                PivotLead(
+                    title=item.get("title", "Lead"),
+                    summary=item.get("summary", ""),
+                    rationale=item.get("rationale", item.get("why", "")),
+                    recommended_actions=item.get("recommended_actions", item.get("next_steps", "")),
+                    confidence=item.get("confidence", "moderate"),
+                    supporting_evidence=evidence,
+                )
+            )
+        return results
+
+    def _collect_pivot_evidence(
+        self,
+        pivot: Dict[str, Any],
+        sample_records: List[Dict[str, Any]],
+        dataset_label: str,
+        limit: int = 5,
+    ) -> List[str]:
+        criteria = pivot.get("indicator") or pivot.get("title") or ""
+        evidence: List[str] = []
+        if not sample_records:
+            return evidence
+        criteria_lower = str(criteria).lower()
+        for row in sample_records:
+            haystack = " ".join(str(value) for value in row.values())
+            if criteria_lower and criteria_lower not in haystack.lower():
+                continue
+            row_number = row.get("__row_number")
+            if not row_number:
+                continue
+            evidence.append(
+                f"{row.get('__source_file', dataset_label)}:{row_number}:Type → {row.get('Type')}"
+            )
+            evidence.append(
+                f"{row.get('__source_file', dataset_label)}:{row_number}:Data → {row.get('Data')}"
+            )
+            if len(evidence) >= limit:
+                break
+        return evidence[:limit]
+
+    def _build_recommendations(self, analysis_data: Dict[str, Any]) -> List[str]:
+        recommendations = analysis_data.get("recommendations") or []
+        if isinstance(recommendations, list) and recommendations:
+            return recommendations
+
+        outputs: List[str] = []
+        corruption = analysis_data.get("corruption_patterns", {})
+        if corruption.get("total_indicators", 0) > 0:
+            outputs.append(
+                "Escalate corruption-related entities for enhanced due diligence with provenance attached."
+            )
+        toc = analysis_data.get("toc_patterns", {})
+        if toc.get("total_indicators", 0) > 0:
+            outputs.append(
+                "Deploy immediate containment for systems linked to threat-of-compromise alerts."
+            )
+        risk_domains = analysis_data.get("risk_domains", {})
+        if risk_domains.get("total_risk_domains", 0) > 0:
+            outputs.append(
+                "Blacklist domains flagged as high-risk until manual adjudication is complete."
+            )
+        compromised = analysis_data.get("compromised_assets", {})
+        if compromised.get("total_compromised", 0) > 0:
+            outputs.append(
+                "Notify asset owners and initiate forensic containment for compromised infrastructure."
+            )
+        if not outputs:
+            outputs.append("No actionable threats detected; continue monitoring cadence.")
+        return outputs
+
+
+def resolve_llm_builder(prefer_remote: bool = True) -> BaseReportBuilder:
+    """Return an LLM-capable report builder, preferring remote providers when configured."""
+
+    remote_error: Optional[Exception] = None
+    if prefer_remote and completion is not None:
+        try:
+            config = LLMReportConfig.from_environment()
+        except LLMReportError as exc:
+            remote_error = exc
+        else:
+            try:
+                return LLMReportBuilder(config)
+            except LLMReportError as exc:  # litellm missing or misconfigured
+                remote_error = exc
+
+    if remote_error:
+        print(f"  ! Falling back to embedded narrative engine: {remote_error}")
+
+    return LocalLLMReportBuilder.from_environment()

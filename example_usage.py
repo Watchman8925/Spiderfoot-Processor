@@ -112,7 +112,11 @@ def example_report_generation(csv_path):
     analysis = analyzer.generate_full_analysis()
 
     # Generate reports
-    generator = ReportGenerator(analysis, output_dir='./example_reports')
+    generator = ReportGenerator(
+        analysis,
+        output_dir='./example_reports',
+        source_records=result['data']
+    )
 
     # Generate charts
     try:
@@ -124,15 +128,20 @@ def example_report_generation(csv_path):
         print(f"Could not generate charts: {e}")
         print("Install matplotlib: pip install matplotlib")
 
-    # Generate PDF
+    # Generate PDFs
     try:
-        pdf_path = generator.generate_pdf_report()
-        print(f"Generated PDF report: {pdf_path}")
+        pdf_paths = generator.generate_dual_pdf_reports()
+        print(f"Generated intelligence PDF: {pdf_paths['pdf_intelligence']}")
+        print(f"Generated narrative PDF: {pdf_paths['pdf_narrative']}")
     except ImportError as e:
-        print(f"Could not generate PDF: {e}")
+        print(f"Could not generate PDFs: {e}")
         print("Install reportlab: pip install reportlab")
 
     # Generate JSON
+    web_context = generator.export_web_research()
+    if web_context:
+        print(f"Generated web research summary: {web_context}")
+
     json_path = generator.export_json_report()
     print(f"Generated JSON export: {json_path}")
 

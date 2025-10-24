@@ -64,6 +64,11 @@ Examples:
                        help='Display summary statistics only')
     parser.add_argument('--no-reports', action='store_true',
                        help='Skip report generation (only import and analyze)')
+    parser.add_argument('--enable-web-research', dest='web_research', action='store_true',
+                        help='Enrich reports with live web search context (requires internet access)')
+    parser.add_argument('--disable-web-research', dest='web_research', action='store_false',
+                        help='Force-disable web research even if enabled via environment')
+    parser.set_defaults(web_research=None)
 
     args = parser.parse_args()
 
@@ -165,7 +170,12 @@ Examples:
 
     print(f"[3/4] Generating reports in: {args.output_dir}")
 
-    generator = ReportGenerator(analysis, str(output_dir))
+    generator = ReportGenerator(
+        analysis,
+        str(output_dir),
+        source_records=data_to_analyze,
+        enable_web_research=args.web_research
+    )
 
     # Generate charts
     if not args.pdf_only:
@@ -184,17 +194,22 @@ Examples:
         except Exception as e:
             print(f"  ✗ Error generating charts: {e}")
 
-    # Generate PDF
+    # Generate PDFs
     if not args.charts_only:
-        print("  → Generating PDF report...")
+        print("  → Generating PDF reports...")
         try:
-            pdf_path = generator.generate_pdf_report()
-            print(f"  ✓ PDF report: {Path(pdf_path).name}")
+            pdf_paths = generator.generate_dual_pdf_reports()
+            print(f"  ✓ Intelligence PDF: {Path(pdf_paths['pdf_intelligence']).name}")
+            print(f"  ✓ Narrative PDF: {Path(pdf_paths['pdf_narrative']).name}")
         except ImportError as e:
-            print("  ! Could not generate PDF: {}".format(e))
+            print("  ! Could not generate PDFs: {}".format(e))
             print("  ! Install reportlab: pip install reportlab")
         except Exception as e:
-            print(f"  ✗ Error generating PDF: {e}")
+            print(f"  ✗ Error generating PDFs: {e}")
+
+    web_research_path = generator.export_web_research()
+    if web_research_path:
+        print(f"  ✓ Web research summary: {Path(web_research_path).name}")
 
     # Generate JSON if requested
     if args.json:
