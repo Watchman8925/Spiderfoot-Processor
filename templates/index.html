@@ -94,6 +94,17 @@
                             </button>
                             <button class="tab-button" onclick="showTab('modules', event)">
                                 <i class="fas fa-puzzle-piece"></i> Modules
+                                <div class="analysis-toolbar">
+                                    <div class="toolbar-actions">
+                                        <button class="btn btn-outline" onclick="returnToSummary()">
+                                            <i class="fas fa-arrow-left"></i> Back to Summary
+                                        </button>
+                                        <button class="btn btn-secondary" onclick="resetApp()">
+                                            <i class="fas fa-redo"></i> Start Over
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="aiStatusBanner" class="ai-status"></div>
                             </button>
                             <button class="tab-button" onclick="showTab('corruption', event)">
                                 <i class="fas fa-exclamation-triangle"></i> Corruption

@@ -9,12 +9,14 @@ let currentFilename = null;
 let currentAnalysis = null;
 let currentAiReport = null;
 let currentWebResearch = null;
+let currentAiStatus = null;
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     setupUploadZone();
     setupFileInput();
     setupPreviewModal();
+    renderAiStatus(false);
 });
 
 // Setup drag-and-drop upload zone
@@ -144,6 +146,9 @@ async function analyzeData() {
         return;
     }
 
+    currentAiStatus = null;
+    renderAiStatus(true);
+
     showLoading('Analyzing data patterns and threats...');
 
     try {
@@ -178,6 +183,8 @@ async function analyzeData() {
 function displayAnalysis(analysis) {
     document.getElementById('summarySection').style.display = 'none';
     document.getElementById('analysisSection').style.display = 'block';
+
+    renderAiStatus(true);
 
     // Display threat overview
     displayThreatOverview(analysis);
@@ -526,12 +533,29 @@ function renderRecordTable(container, records, title, emptyMessage) {
     }
 
     const limit = Math.min(records.length, RECORD_RENDER_LIMIT);
+    const hasDetectionMethod = records.some((record) => {
+        if (!record || typeof record !== 'object') {
+            return false;
+        }
+        return Boolean(
+            record.detection_method
+            || record.detectionMethod
+            || (record.meta && record.meta.detection_method)
+        );
+    });
+
     const rows = records.slice(0, limit).map((record) => {
         const eventType = record.type || record.Type || 'Unknown';
         const module = record.module || record.Module || 'Unknown';
         const source = record.source || record.Source || '';
         const dataField = record.data || record.Data || '';
         const timestamp = record.timestamp || record.Time || record.Timestamp || '';
+        const detection = hasDetectionMethod
+            ? (record.detection_method || record.detectionMethod || (record.meta && record.meta.detection_method) || '')
+            : '';
+        const detectionCell = hasDetectionMethod
+            ? `<td>${detection ? `<span class="detection-badge">${escapeHtml(detection)}</span>` : ''}</td>`
+            : '';
 
         return `
             <tr>
@@ -540,6 +564,7 @@ function renderRecordTable(container, records, title, emptyMessage) {
                 <td>${escapeHtml(truncateText(source, 120))}</td>
                 <td>${escapeHtml(truncateText(dataField, 200))}</td>
                 <td>${escapeHtml(timestamp)}</td>
+                ${detectionCell}
             </tr>
         `;
     }).join('');
@@ -554,6 +579,7 @@ function renderRecordTable(container, records, title, emptyMessage) {
                 <th>Source</th>
                 <th>Data</th>
                 <th>Timestamp</th>
+                ${hasDetectionMethod ? '<th>Detection</th>' : ''}
             </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -572,6 +598,144 @@ function renderRecordTable(container, records, title, emptyMessage) {
     section.appendChild(note);
 
     container.appendChild(section);
+}
+
+function renderAiStatus(showDefault = false) {
+    const banner = document.getElementById('aiStatusBanner');
+    if (!banner) {
+        return;
+    }
+
+    banner.className = 'ai-status';
+
+    if (!currentAiStatus) {
+        if (showDefault) {
+            banner.style.display = 'block';
+            banner.classList.add('ai-status--muted');
+            banner.innerHTML = `
+                <div class="ai-status__headline">
+                    <i class="fas fa-robot"></i>
+                    <div>
+                        <h4>AI narrative not generated</h4>
+                        <p>Generate reports with AI enabled to receive executive summaries and pivots.</p>
+                    </div>
+                </div>
+            `;
+        } else {
+            banner.style.display = 'none';
+            banner.innerHTML = '';
+        }
+        return;
+    }
+
+    let variant = 'info';
+    let icon = 'fa-robot';
+    let headingText = 'AI narrative status';
+
+    if (currentAiStatus.report_generated) {
+        variant = 'success';
+        icon = 'fa-check-circle';
+        headingText = 'AI narrative ready';
+    } else if (currentAiStatus.error) {
+        variant = 'warning';
+        icon = 'fa-triangle-exclamation';
+    } else if (!currentAiStatus.enabled || !currentAiStatus.dependency_ready) {
+        variant = 'info';
+        icon = 'fa-circle-info';
+    }
+
+    banner.style.display = 'block';
+    banner.classList.add(`ai-status--${variant}`);
+
+    const message = currentAiStatus.message || 'Status unknown.';
+
+    banner.innerHTML = `
+        <div class="ai-status__headline">
+            <i class="fas ${icon}"></i>
+            <div>
+                <h4>${escapeHtml(headingText)}</h4>
+                <p>${escapeHtml(message)}</p>
+            </div>
+        </div>
+    `;
+
+    if (Array.isArray(currentAiStatus.suggestions) && currentAiStatus.suggestions.length > 0) {
+        const suggestionList = document.createElement('ul');
+        suggestionList.className = 'ai-status__suggestions';
+        currentAiStatus.suggestions.forEach((suggestion) => {
+            const item = document.createElement('li');
+            item.textContent = suggestion;
+            suggestionList.appendChild(item);
+        });
+        banner.appendChild(suggestionList);
+    }
+
+    if (Array.isArray(currentAiStatus.logs) && currentAiStatus.logs.length > 0) {
+        const details = document.createElement('details');
+        details.className = 'ai-status__logs';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Recent AI activity';
+        details.appendChild(summary);
+
+        const logList = document.createElement('ul');
+        currentAiStatus.logs.forEach((entry) => {
+            const item = document.createElement('li');
+            item.textContent = entry;
+            logList.appendChild(item);
+        });
+        details.appendChild(logList);
+        banner.appendChild(details);
+    }
+}
+
+function renderDetectionSummary(container, summary) {
+    if (!summary || typeof summary !== 'object') {
+        return;
+    }
+
+    const segments = [];
+    if (summary.plugin_events) {
+        segments.push(`${Number(summary.plugin_events).toLocaleString()} plugin findings`);
+    }
+    if (summary.keyword_matches) {
+        segments.push(`${Number(summary.keyword_matches).toLocaleString()} keyword matches`);
+    }
+    if (summary.other_matches) {
+        segments.push(`${Number(summary.other_matches).toLocaleString()} heuristic matches`);
+    }
+
+    const hasNotes = Array.isArray(summary.notes) && summary.notes.length > 0;
+
+    if (segments.length === 0 && !hasNotes) {
+        return;
+    }
+
+    const callout = document.createElement('div');
+    callout.className = 'analysis-callout';
+
+    const heading = document.createElement('h4');
+    heading.innerHTML = '<i class="fas fa-lightbulb"></i> Detection Summary';
+    callout.appendChild(heading);
+
+    if (segments.length > 0) {
+        const summaryText = document.createElement('p');
+        summaryText.className = 'analysis-callout__body';
+        summaryText.textContent = segments.join(' · ');
+        callout.appendChild(summaryText);
+    }
+
+    if (hasNotes) {
+        const notesList = document.createElement('ul');
+        notesList.className = 'analysis-callout__notes';
+        summary.notes.forEach((note) => {
+            const item = document.createElement('li');
+            item.textContent = note;
+            notesList.appendChild(item);
+        });
+        callout.appendChild(notesList);
+    }
+
+    container.appendChild(callout);
 }
 
 function truncateText(value, maxLength) {
@@ -742,6 +906,8 @@ function displayCorruptionTab(corruptionPatterns) {
     `;
     tab.appendChild(summary);
 
+    renderDetectionSummary(tab, corruptionPatterns.detection_summary);
+
     if (corruptionPatterns.most_common_keywords && corruptionPatterns.most_common_keywords.length > 0) {
         const keywordsSection = document.createElement('div');
         keywordsSection.innerHTML = '<h4>Most Common Keywords</h4>';
@@ -783,6 +949,8 @@ function displayThreatsTab(tocPatterns) {
         </div>
     `;
     tab.appendChild(summary);
+
+    renderDetectionSummary(tab, tocPatterns.detection_summary);
 
     if (tocPatterns.most_common_keywords && tocPatterns.most_common_keywords.length > 0) {
         const keywordsSection = document.createElement('div');
@@ -1003,6 +1171,9 @@ async function generateReport() {
 
         currentAiReport = result.ai_report || null;
         currentWebResearch = result.web_research || null;
+        currentAiStatus = result.llm_status || null;
+
+        renderAiStatus(true);
 
         if (currentAnalysis) {
             displayPivotsTab(currentAnalysis.pivots_and_leads || []);
@@ -1149,12 +1320,29 @@ function showTab(tabName, evt) {
 function resetApp() {
     currentFilename = null;
     currentAnalysis = null;
+    currentAiReport = null;
+    currentAiStatus = null;
+    currentWebResearch = null;
 
     document.getElementById('summarySection').style.display = 'none';
     document.getElementById('analysisSection').style.display = 'none';
     document.getElementById('downloadsSection').style.display = 'none';
     document.getElementById('uploadSection').style.display = 'block';
     document.getElementById('fileInput').value = '';
+    renderAiStatus(false);
+}
+
+function returnToSummary() {
+    if (!currentFilename) {
+        resetApp();
+        return;
+    }
+
+    document.getElementById('analysisSection').style.display = 'none';
+    document.getElementById('downloadsSection').style.display = 'none';
+    document.getElementById('summarySection').style.display = 'block';
+    document.getElementById('summarySection').scrollIntoView({ behavior: 'smooth' });
+    renderAiStatus(true);
 }
 
 // Show loading overlay

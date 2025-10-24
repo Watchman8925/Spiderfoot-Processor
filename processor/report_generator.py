@@ -10,11 +10,15 @@
 # License:      MIT
 # -------------------------------------------------------------------------------
 
+from __future__ import annotations
+
 import json
+import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 from processor.web_research import (
     WebResearchClient,
@@ -55,11 +59,24 @@ try:
     )
     HAS_LLM = True
 except ImportError:  # Optional dependency
-    BaseReportBuilder = None  # type: ignore
-    LLMReportError = None  # type: ignore
-    LLMReportResult = None  # type: ignore
-    resolve_llm_builder = None  # type: ignore
+    BaseReportBuilder = Any  # type: ignore[assignment]
+
+    class _LLMReportFallbackError(RuntimeError):
+        """Fallback error used when LLM support is unavailable."""
+        pass
+
+    LLMReportError = _LLMReportFallbackError  # type: ignore[assignment]
+    LLMReportResult = Any  # type: ignore[assignment]
+
+    def resolve_llm_builder() -> "BaseReportBuilder":  # type: ignore[return-type]
+        raise ImportError("LLM reporting dependencies are not installed")
+
     HAS_LLM = False
+
+LOGGER = logging.getLogger(__name__)
+
+LLM_MODEL_ENV_KEYS = ("SPIDERFOOT_LLM_MODEL", "LLM_MODEL")
+LLM_API_KEY_ENV_KEYS = ("SPIDERFOOT_LLM_API_KEY", "LLM_API_KEY")
 
 class ReportGenerator:
     """Generate visual reports and PDF documents from SpiderFoot analysis."""
@@ -85,14 +102,16 @@ class ReportGenerator:
         self.analysis_data = analysis_data
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.charts = []
+        self.charts: List[str] = []
         self.source_records = source_records or []
         self.enable_llm = enable_llm
-        self._llm_builder = None
-        self._llm_report = None
+        self._llm_builder: Optional["BaseReportBuilder"] = None
+        self._llm_report: Optional["LLMReportResult"] = None
         self._llm_markdown_path = None
         self._llm_attempted = False
-        self._llm_error = None
+        self._llm_error: Optional[str] = None
+        self._llm_logs: List[str] = []
+        self._llm_attempt_count = 0
 
         self._web_research_config = WebResearchConfig.from_environment(enable_web_research)
         self.enable_web_research = self._web_research_config.enabled
@@ -101,7 +120,7 @@ class ReportGenerator:
         self._web_research_results: Optional[Dict[str, Any]] = None
         self._web_research_error: Optional[str] = None
 
-    def generate_event_distribution_chart(self, output_path: Optional[str] = None) -> str:
+    def generate_event_distribution_chart(self, output_path: Optional[Union[str, Path]] = None) -> str:
         """
         Generate a pie chart of event type distribution.
 
@@ -157,7 +176,7 @@ class ReportGenerator:
 
         return str(output_path)
 
-    def generate_module_activity_chart(self, output_path: Optional[str] = None) -> str:
+    def generate_module_activity_chart(self, output_path: Optional[Union[str, Path]] = None) -> str:
         """
         Generate a bar chart of module activity.
 
@@ -202,7 +221,7 @@ class ReportGenerator:
 
         return str(output_path)
 
-    def generate_threat_overview_chart(self, output_path: Optional[str] = None) -> str:
+    def generate_threat_overview_chart(self, output_path: Optional[Union[str, Path]] = None) -> str:
         """
         Generate a bar chart showing corruption vs TOC indicators.
 
@@ -289,20 +308,57 @@ class ReportGenerator:
 
         return charts
 
+    def _log_llm_event(self, message: str, level: int = logging.INFO) -> None:
+        """Record LLM-related messages for downstream status reporting."""
+
+        if not message:
+            return
+
+        text = message.strip()
+        if not text:
+            return
+
+        LOGGER.log(level, text)
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        self._llm_logs.append(f"{timestamp} | {text}")
+        if len(self._llm_logs) > 12:
+            self._llm_logs = self._llm_logs[-12:]
+
     def _ensure_llm_builder(self) -> Optional["BaseReportBuilder"]:
         """Initialise the LLM builder if configuration and dependencies permit."""
-        if not self.enable_llm or not HAS_LLM:
+
+        if not self.enable_llm:
+            if not self._llm_error:
+                self._log_llm_event("LLM reporting disabled by configuration.")
             return None
+
+        if not HAS_LLM:
+            message = "LLM dependencies not installed (missing optional 'litellm')."
+            if not self._llm_error:
+                self._llm_error = message
+            self._log_llm_event(message, logging.WARNING)
+            self.enable_llm = False
+            return None
+
         if self._llm_builder is not None:
             return self._llm_builder
+
         if self._llm_error:
             return None
+
         try:
             self._llm_builder = resolve_llm_builder()
+            config = getattr(self._llm_builder, "config", None)
+            if config is not None:
+                model_name = getattr(config, "model", "configured-model")
+                self._log_llm_event(f"LLM builder initialised with model '{model_name}'.")
+            else:
+                self._log_llm_event("LLM builder initialised.")
         except LLMReportError as exc:
+            message = f"LLM reporting disabled: {exc}"
             self._llm_error = str(exc)
             self.enable_llm = False
-            print(f"  ! LLM reporting disabled: {exc}")
+            self._log_llm_event(message, logging.ERROR)
             self._llm_builder = None
         return self._llm_builder
 
@@ -431,7 +487,7 @@ class ReportGenerator:
         """Expose cached web research results to callers."""
         return self._perform_web_research()
 
-    def export_web_research(self, output_path: Optional[str] = None) -> Optional[str]:
+    def export_web_research(self, output_path: Optional[Union[str, Path]] = None) -> Optional[str]:
         """Persist web research findings for review."""
         results = self._perform_web_research()
         if not results:
@@ -450,14 +506,22 @@ class ReportGenerator:
 
     def _maybe_generate_llm_report(self) -> Optional[Any]:
         """Generate or retrieve a cached LLM narrative."""
-        if self._llm_report is not None or self._llm_attempted:
-            return self._llm_report
 
-        self._llm_attempted = True
+        if self._llm_report is not None:
+            return self._llm_report
+        if self._llm_attempted:
+            return None
 
         builder = self._ensure_llm_builder()
         if builder is None:
+            self._llm_attempted = True
+            if self.enable_llm and not self._llm_error:
+                self._log_llm_event("LLM builder unavailable; AI narrative skipped.", logging.INFO)
             return None
+
+        self._llm_attempted = True
+        self._llm_attempt_count += 1
+        self._log_llm_event("Invoking configured LLM to generate narrative…")
 
         web_context = self._perform_web_research()
         if web_context:
@@ -467,13 +531,15 @@ class ReportGenerator:
 
         try:
             self._llm_report = builder.generate_report(self.analysis_data, self.source_records)
+            self._llm_error = None
+            self._log_llm_event("LLM narrative generated successfully.", logging.INFO)
         except LLMReportError as exc:
             self._llm_error = str(exc)
-            print(f"  ! AI narrative skipped: {exc}")
+            self._log_llm_event(f"AI narrative skipped: {exc}", logging.WARNING)
             self._llm_report = None
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover - defensive logging for unexpected errors
             self._llm_error = str(exc)
-            print(f"  ! Unexpected error generating AI narrative: {exc}")
+            self._log_llm_event(f"Unexpected error generating AI narrative: {exc}", logging.ERROR)
             self._llm_report = None
 
         return self._llm_report
@@ -559,7 +625,7 @@ class ReportGenerator:
 
         return elements
 
-    def export_llm_markdown(self, output_path: Optional[str] = None) -> Optional[str]:
+    def export_llm_markdown(self, output_path: Optional[Union[str, Path]] = None) -> Optional[str]:
         """Persist the LLM narrative as Markdown, if available."""
         llm_report = self._maybe_generate_llm_report()
         if not llm_report:
@@ -582,6 +648,65 @@ class ReportGenerator:
         if llm_report:
             return llm_report.to_dict()
         return None
+
+    def get_llm_status(self) -> Dict[str, Any]:
+        """Provide a serialisable summary of the current LLM state."""
+
+        env_model = next((os.getenv(key) for key in LLM_MODEL_ENV_KEYS if os.getenv(key)), None)
+        env_api_key = next((os.getenv(key) for key in LLM_API_KEY_ENV_KEYS if os.getenv(key)), None)
+
+        if self._llm_report is not None:
+            status_message = "AI narrative generated successfully."
+        elif not self.enable_llm:
+            status_message = self._llm_error or "LLM reporting disabled."
+        elif not HAS_LLM:
+            status_message = "LLM support unavailable: install the optional 'litellm' dependency."
+        elif not env_model or not env_api_key:
+            status_message = "LLM reporting not configured. Provide model and API credentials to enable AI narratives."
+        elif self._llm_attempted and self._llm_error:
+            status_message = f"LLM attempt failed: {self._llm_error}"
+        else:
+            status_message = "LLM narrative not generated yet. Generate reports to request AI output."
+
+        suggestions: List[str] = []
+        if not HAS_LLM:
+            suggestions.append("Install litellm to enable AI narratives: pip install litellm")
+        if env_model and "gpt" in env_model.lower():
+            suggestions.append(
+                "Verify your OpenAI-style endpoint is reachable. If using Azure, set SPIDERFOOT_LLM_PROVIDER=azure and SPIDERFOOT_LLM_BASE_URL."
+            )
+        if not env_model:
+            suggestions.append("Set SPIDERFOOT_LLM_MODEL (or LLM_MODEL) with your provider's model name.")
+        if not env_api_key:
+            suggestions.append("Set SPIDERFOOT_LLM_API_KEY (or LLM_API_KEY) with your provider API token.")
+        if self._llm_error and "timeout" in self._llm_error.lower():
+            suggestions.append("Increase SPIDERFOOT_LLM_TIMEOUT or provide smaller datasets to avoid timeouts.")
+
+        builder_config: Dict[str, Any] = {}
+        if self._llm_builder and hasattr(self._llm_builder, "config"):
+            builder_config = {
+                "model": getattr(self._llm_builder.config, "model", None),
+                "temperature": getattr(self._llm_builder.config, "temperature", None),
+                "max_sample_records": getattr(self._llm_builder.config, "max_sample_records", None),
+                "redact_fields": list(getattr(self._llm_builder.config, "redact_fields", [])),
+                "request_timeout": getattr(self._llm_builder.config, "request_timeout", None),
+                "max_retries": getattr(self._llm_builder.config, "max_retries", None),
+            }
+
+        return {
+            "enabled": bool(self.enable_llm),
+            "dependency_ready": HAS_LLM,
+            "configured_model": bool(env_model),
+            "configured_api_key": bool(env_api_key),
+            "attempted": bool(self._llm_attempted),
+            "attempt_count": self._llm_attempt_count,
+            "report_generated": self._llm_report is not None,
+            "error": self._llm_error,
+            "message": status_message,
+            "logs": self._llm_logs[-8:],
+            "suggestions": suggestions,
+            "config": builder_config,
+        }
 
     def generate_pdf_report(
         self,
@@ -965,7 +1090,7 @@ class ReportGenerator:
         content = "<br/>".join([f"• {rec}" for rec in recommendations])
         return Paragraph(content, styles['Normal'])
 
-    def export_json_report(self, output_path: Optional[str] = None) -> str:
+    def export_json_report(self, output_path: Optional[Union[str, Path]] = None) -> str:
         """
         Export analysis results as JSON.
 
@@ -1021,7 +1146,7 @@ def generate_report(analysis_data: Dict[str, Any], output_dir: str = "./reports"
         enable_llm=enable_llm,
         enable_web_research=enable_web_research,
     )
-    results = {}
+    results: Dict[str, Any] = {}
 
     if generate_charts:
         try:

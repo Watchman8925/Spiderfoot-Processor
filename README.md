@@ -12,6 +12,7 @@ This plugin pack extends SpiderFoot's OSINT capabilities to identify potential c
 ## Features
 
 ### SpiderFoot Plugin
+
 - **Corruption Detection**: Identifies keywords and patterns associated with corruption, fraud, bribery, and other financial crimes
 - **Threat of Compromise Detection**: Detects indicators of system compromise, data breaches, and malicious activity
 - **Multi-Source Analysis**: Processes data from emails, domains, IP addresses, and dark web mentions
@@ -19,6 +20,7 @@ This plugin pack extends SpiderFoot's OSINT capabilities to identify potential c
 - **Risk Scoring**: Categorizes findings based on risk level and confidence
 
 ### Data Processor (NEW!)
+
 - **CSV Import**: Upload and process SpiderFoot CSV export files
 - **Advanced Analysis**: Analyze patterns, trends, and correlations in your data
 - **Visualization**: Generate charts and graphs for better insights
@@ -44,6 +46,7 @@ python web_app.py
 ```
 
 Features:
+
 - 🌐 **Modern dark-themed web interface**
 - 📤 **Drag-and-drop CSV upload**
 - 📊 **Interactive visualizations**
@@ -72,17 +75,20 @@ python spiderfoot_processor.py your_spiderfoot_export.csv
 
 1. Ensure you have SpiderFoot 4.0 or later installed
 2. Clone this repository:
+
    ```bash
    git clone https://github.com/Watchman8925/Spiderfoot-Processor.git
    cd Spiderfoot-Processor
    ```
 
 3. Install dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 4. Copy the plugin files to your SpiderFoot modules directory:
+
    ```bash
    cp plugins/sfp_toc_corruption.py /path/to/spiderfoot/modules/
    ```
@@ -122,6 +128,7 @@ python web_app.py
 ```
 
 **Features:**
+
 1. **Upload**: Drag-and-drop or browse for your CSV file
 2. **Analyze**: View instant statistics and insights
 3. **Visualize**: Generate interactive charts automatically
@@ -183,12 +190,12 @@ Some investigations benefit from quick open-source context on high-priority find
 
 - Enable at runtime via the CLI flag `--enable-web-research`, the web UI checkbox “Enrich with Web Research,” or by exporting `SPIDERFOOT_WEB_SEARCH_ENABLED=true`.
 - Fine-tune behaviour with:
-   - `SPIDERFOOT_WEB_SEARCH_PROVIDER` (currently `duckduckgo`)
-   - `SPIDERFOOT_WEB_SEARCH_TIMEOUT` (seconds, default 10)
-   - `SPIDERFOOT_WEB_SEARCH_MAX_RESULTS` (per query, default 3)
-   - `SPIDERFOOT_WEB_SEARCH_MAX_QUERIES` (overall cap, default 8)
-   - `SPIDERFOOT_WEB_SEARCH_THROTTLE_SECONDS` (delay between queries, default 1.0)
-   - `SPIDERFOOT_WEB_SEARCH_USER_AGENT` (custom user-agent string)
+  - `SPIDERFOOT_WEB_SEARCH_PROVIDER` (currently `duckduckgo`)
+  - `SPIDERFOOT_WEB_SEARCH_TIMEOUT` (seconds, default 10)
+  - `SPIDERFOOT_WEB_SEARCH_MAX_RESULTS` (per query, default 3)
+  - `SPIDERFOOT_WEB_SEARCH_MAX_QUERIES` (overall cap, default 8)
+  - `SPIDERFOOT_WEB_SEARCH_THROTTLE_SECONDS` (delay between queries, default 1.0)
+  - `SPIDERFOOT_WEB_SEARCH_USER_AGENT` (custom user-agent string)
 
 ⚠️ This feature is off by default to preserve offline operation. When enabled it requires outbound HTTPS access and adheres to the configured throttling limits to avoid hammering remote services.
 

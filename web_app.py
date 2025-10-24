@@ -236,12 +236,16 @@ def generate_report():
             generated_files['llm_markdown'] = str(Path(llm_markdown).name)
             ai_payload = generator.get_llm_report_payload()
 
+        llm_status = generator.get_llm_status()
+        if llm_status.get('error'):
+            app.logger.warning("LLM report generation issue: %s", llm_status['error'])
         return jsonify({
             'success': True,
             'report_id': timestamp,
             'files': generated_files,
             'ai_report': ai_payload,
-            'web_research': generator.get_web_research_results()
+            'web_research': generator.get_web_research_results(),
+            'llm_status': llm_status,
         })
 
     except Exception as e:

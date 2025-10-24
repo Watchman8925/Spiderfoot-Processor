@@ -10,9 +10,67 @@
 # License:      MIT
 # -------------------------------------------------------------------------------
 
+import re
 from collections import Counter, defaultdict
-from typing import Dict, List, Any, Optional, DefaultDict
+from typing import Any, DefaultDict, Dict, List, Optional, Set
 from datetime import datetime
+
+
+TEXT_FIELDS_TO_SCAN = (
+    'Data',
+    'Source',
+    'Notes',
+    'Description',
+    'Summary',
+    'Detail',
+    'Details',
+    'Body',
+    'Title',
+)
+
+CORRUPTION_KEYWORDS = [
+    'corruption',
+    'bribery',
+    'bribe',
+    'kickback',
+    'embezzlement',
+    'fraud',
+    'money laundering',
+    'money-laundering',
+    'nepotism',
+    'extortion',
+    'graft',
+    'illicit payment',
+    'payoff',
+    'misappropriation',
+    'shell company',
+    'offshore account',
+    'slush fund',
+]
+
+TOC_KEYWORDS = [
+    'breach',
+    'data breach',
+    'compromise',
+    'compromised',
+    'leaked',
+    'data leak',
+    'exposed',
+    'credential',
+    'password dump',
+    'malware',
+    'ransomware',
+    'backdoor',
+    'exfiltration',
+    'phishing',
+    'botnet',
+    'zero-day',
+    'exploit',
+    'intrusion',
+    'payload',
+    'threat actor',
+    'attack',
+]
 
 
 class SpiderFootAnalyzer:
@@ -39,6 +97,96 @@ class SpiderFootAnalyzer:
             'raw': row
         }
         return record
+
+    def _extract_indicator_keyword(self, data_field: Any) -> Optional[str]:
+        if not isinstance(data_field, str):
+            return None
+        lowered = data_field.lower()
+        if 'keyword detected:' in lowered:
+            return data_field.split(':', 1)[1].strip()
+        return None
+
+    def _stringify_value(self, value: Any) -> List[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (int, float)):
+            return [str(value)]
+        if isinstance(value, (list, tuple, set)):
+            parts: List[str] = []
+            for item in value:
+                parts.extend(self._stringify_value(item))
+            return parts
+        if isinstance(value, dict):
+            parts: List[str] = []
+            for item in value.values():
+                parts.extend(self._stringify_value(item))
+            return parts
+        return []
+
+    def _collect_row_text(self, row: Dict[str, Any]) -> str:
+        text_parts: List[str] = []
+        for field in TEXT_FIELDS_TO_SCAN:
+            text_parts.extend(self._stringify_value(row.get(field)))
+        if not text_parts:
+            for key, value in row.items():
+                if isinstance(key, str) and key.startswith('__'):
+                    continue
+                text_parts.extend(self._stringify_value(value))
+        return " ".join(part for part in text_parts if part)
+
+    def _normalise_keywords(self, keywords: Set[str]) -> List[str]:
+        normalised: Dict[str, str] = {}
+        for keyword in keywords:
+            if not keyword:
+                continue
+            canonical = keyword.strip()
+            if not canonical:
+                continue
+            key = canonical.lower()
+            if key not in normalised:
+                normalised[key] = canonical
+        return list(normalised.values())
+
+    def _keyword_matches(self, text: str, keywords: List[str]) -> Set[str]:
+        matches: Set[str] = set()
+        if not text:
+            return matches
+        lowered = text.lower()
+        for keyword in keywords:
+            candidate = keyword.lower()
+            if ' ' in candidate or '-' in candidate or '/' in candidate:
+                if candidate in lowered:
+                    matches.add(keyword)
+            else:
+                if re.search(rf"\b{re.escape(candidate)}\b", lowered):
+                    matches.add(keyword)
+        return matches
+
+    def _detect_keyword_matches(
+        self,
+        rows: List[Dict[str, Any]],
+        keywords: List[str],
+        skip_ids: Optional[Set[int]] = None,
+        method_label: str = "Keyword match"
+    ) -> List[Dict[str, Any]]:
+        matches: List[Dict[str, Any]] = []
+        active_skip_ids: Set[int] = skip_ids if skip_ids is not None else set()
+        for row in rows:
+            row_id = id(row)
+            if row_id in active_skip_ids:
+                continue
+            text_blob = self._collect_row_text(row)
+            keyword_hits = self._keyword_matches(text_blob, keywords)
+            if not keyword_hits:
+                continue
+            record = self._normalize_record(row)
+            normalized_hits = self._normalise_keywords(keyword_hits)
+            if normalized_hits:
+                record['matched_keywords'] = normalized_hits
+            record['detection_method'] = method_label
+            matches.append(record)
+            active_skip_ids.add(row_id)
+        return matches
 
     def analyze_event_distribution(self) -> Dict[str, Any]:
         """
@@ -96,34 +244,81 @@ class SpiderFootAnalyzer:
         Returns:
             Dictionary with corruption pattern analysis
         """
-        corruption_data = [row for row in self.data
-                          if row.get('Type') == 'CORRUPTION_INDICATOR']
+        corruption_rows = [row for row in self.data if row.get('Type') == 'CORRUPTION_INDICATOR']
 
-        if not corruption_data:
-            return {
-                'total_indicators': 0,
-                'patterns': {},
-                'keywords_found': []
-            }
-
-        # Extract and analyze corruption keywords
-        keywords: List[str] = []
+        keyword_counter: Counter[str] = Counter()
         patterns: DefaultDict[str, int] = defaultdict(int)
+        events: List[Dict[str, Any]] = []
+        detection_summary = {
+            'plugin_events': 0,
+            'keyword_matches': 0,
+            'other_matches': 0,
+            'notes': []
+        }
+        seen_ids: Set[int] = set()
 
-        for row in corruption_data:
-            data_field = row.get('Data', '')
-            # Extract keyword from data field (format: "Corruption keyword detected: keyword")
-            if 'keyword detected:' in data_field.lower():
-                keyword = data_field.split(':', 1)[1].strip()
-                keywords.append(keyword)
+        for row in corruption_rows:
+            seen_ids.add(id(row))
+            record = self._normalize_record(row)
+            record['detection_method'] = 'Plugin finding'
+
+            matched_keywords: Set[str] = set()
+            extracted = self._extract_indicator_keyword(row.get('Data'))
+            if extracted:
+                matched_keywords.add(extracted)
+            matched_keywords.update(self._keyword_matches(self._collect_row_text(row), CORRUPTION_KEYWORDS))
+
+            normalised = self._normalise_keywords(matched_keywords)
+            if normalised:
+                record['matched_keywords'] = normalised
+                for keyword in normalised:
+                    keyword_counter[keyword] += 1
+                    patterns[keyword] += 1
+
+            events.append(record)
+
+        detection_summary['plugin_events'] = len(events)
+
+        heuristic_events = self._detect_keyword_matches(
+            self.data,
+            CORRUPTION_KEYWORDS,
+            skip_ids=seen_ids,
+            method_label="Keyword match"
+        )
+
+        for record in heuristic_events:
+            for keyword in record.get('matched_keywords', []):
+                keyword_counter[keyword] += 1
                 patterns[keyword] += 1
 
+        if heuristic_events:
+            detection_summary['keyword_matches'] = len(heuristic_events)
+            detection_summary['notes'].append(
+                "Keyword heuristics surfaced potential corruption-related records that were not explicitly flagged."
+            )
+
+        total_indicators = len(events)
+
+        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] > 0:
+            detection_summary['notes'].append(
+                "No explicit CORRUPTION_INDICATOR events were present; results rely on keyword heuristics."
+            )
+        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] == 0 and total_indicators == 0:
+            detection_summary['notes'].append(
+                "No corruption indicators were discovered in the dataset."
+            )
+
+        events.extend(heuristic_events)
+
         return {
-            'total_indicators': len(corruption_data),
-            'unique_keywords': len(set(keywords)),
+            'total_indicators': len(events),
+            'unique_keywords': len(keyword_counter),
             'keywords_distribution': dict(patterns),
-            'most_common_keywords': Counter(keywords).most_common(10),
-            'events': [self._normalize_record(row) for row in corruption_data]
+            'most_common_keywords': keyword_counter.most_common(10),
+            'events': events,
+            'detection_summary': detection_summary,
+            'patterns': dict(patterns),
+            'keywords_found': list(keyword_counter.elements()),
         }
 
     def analyze_toc_patterns(self) -> Dict[str, Any]:
@@ -133,40 +328,103 @@ class SpiderFootAnalyzer:
         Returns:
             Dictionary with TOC pattern analysis
         """
-        toc_data = [row for row in self.data
-                   if row.get('Type') == 'TOC_INDICATOR']
+        toc_rows = [row for row in self.data if row.get('Type') == 'TOC_INDICATOR']
 
-        if not toc_data:
-            return {
-                'total_indicators': 0,
-                'patterns': {},
-                'keywords_found': []
-            }
-
-        # Extract and analyze TOC keywords
-        keywords: List[str] = []
+        keyword_counter: Counter[str] = Counter()
         patterns: DefaultDict[str, int] = defaultdict(int)
+        events: List[Dict[str, Any]] = []
+        detection_summary = {
+            'plugin_events': 0,
+            'keyword_matches': 0,
+            'other_matches': 0,
+            'notes': []
+        }
+        seen_ids: Set[int] = set()
 
-        for row in toc_data:
+        for row in toc_rows:
+            seen_ids.add(id(row))
+            record = self._normalize_record(row)
+            record['detection_method'] = 'Plugin finding'
+
+            matched_keywords: Set[str] = set()
+            extracted = self._extract_indicator_keyword(row.get('Data'))
+            if extracted:
+                matched_keywords.add(extracted)
+            matched_keywords.update(self._keyword_matches(self._collect_row_text(row), TOC_KEYWORDS))
+
+            normalised = self._normalise_keywords(matched_keywords)
+            if normalised:
+                record['matched_keywords'] = normalised
+                for keyword in normalised:
+                    keyword_counter[keyword] += 1
+                    patterns[keyword] += 1
+
             data_field = row.get('Data', '')
-            # Extract keyword from data field
-            if 'keyword detected:' in data_field.lower():
-                keyword = data_field.split(':', 1)[1].strip()
-                keywords.append(keyword)
+            if isinstance(data_field, str):
+                lowered = data_field.lower()
+                if 'suspicious pattern' in lowered:
+                    patterns['suspicious_pattern'] += 1
+                if 'suspicious tld' in lowered:
+                    patterns['suspicious_tld'] += 1
+                if 'phishing term' in lowered:
+                    patterns['phishing_term'] += 1
+
+            events.append(record)
+
+        detection_summary['plugin_events'] = len(events)
+
+        heuristic_events = self._detect_keyword_matches(
+            self.data,
+            TOC_KEYWORDS,
+            skip_ids=seen_ids,
+            method_label="Keyword match"
+        )
+
+        for record in heuristic_events:
+            for keyword in record.get('matched_keywords', []):
+                keyword_counter[keyword] += 1
                 patterns[keyword] += 1
-            elif 'suspicious pattern' in data_field.lower():
-                patterns['suspicious_pattern'] += 1
-            elif 'suspicious tld' in data_field.lower():
-                patterns['suspicious_tld'] += 1
-            elif 'phishing term' in data_field.lower():
-                patterns['phishing_term'] += 1
+
+        if heuristic_events:
+            detection_summary['keyword_matches'] = len(heuristic_events)
+            detection_summary['notes'].append(
+                "Keyword heuristics identified potential threat-of-compromise signals beyond explicit plugin findings."
+            )
+
+        total_indicators = len(events)
+
+        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] > 0:
+            detection_summary['notes'].append(
+                "No explicit TOC_INDICATOR events were present; results rely on keyword heuristics."
+            )
+
+        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] == 0 and total_indicators == 0:
+            detection_summary['notes'].append(
+                "No threat-of-compromise indicators were discovered in the dataset."
+            )
+
+        if any(key in patterns for key in ('suspicious_pattern', 'suspicious_tld', 'phishing_term')):
+            context_notes = []
+            for label in ('suspicious_pattern', 'suspicious_tld', 'phishing_term'):
+                if label in patterns:
+                    context_notes.append(f"{label.replace('_', ' ').title()} ({patterns[label]})")
+                    detection_summary['other_matches'] += patterns[label]
+            if context_notes:
+                detection_summary['notes'].append(
+                    "Additional heuristic signals: " + ', '.join(context_notes)
+                )
+
+        events.extend(heuristic_events)
 
         return {
-            'total_indicators': len(toc_data),
-            'unique_keywords': len(set(keywords)),
+            'total_indicators': len(events),
+            'unique_keywords': len(keyword_counter),
             'keywords_distribution': dict(patterns),
-            'most_common_keywords': Counter(keywords).most_common(10) if keywords else [],
-            'events': [self._normalize_record(row) for row in toc_data]
+            'most_common_keywords': keyword_counter.most_common(10) if keyword_counter else [],
+            'events': events,
+            'detection_summary': detection_summary,
+            'patterns': dict(patterns),
+            'keywords_found': list(keyword_counter.elements()),
         }
 
     def analyze_risk_domains(self) -> Dict[str, Any]:
