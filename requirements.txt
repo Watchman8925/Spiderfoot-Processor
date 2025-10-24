@@ -18,6 +18,9 @@ matplotlib>=3.5.0
 # For PDF report generation
 reportlab>=3.6.0
 
+# Typing stubs for reportlab (keeps type checkers happy when optional dependency is installed)
+types-reportlab>=4.4.0
+
 # For web application
 Flask>=2.3.0
 Werkzeug>=2.3.0

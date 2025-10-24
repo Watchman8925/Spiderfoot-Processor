@@ -8,6 +8,7 @@ generating visualizations, and creating PDF reports.
 """
 
 import importlib
+import json
 import os
 import sys
 from datetime import datetime
@@ -35,11 +36,33 @@ app.config['UPLOAD_FOLDER'].mkdir(exist_ok=True)
 app.config['REPORTS_FOLDER'].mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'csv'}
+TEXT_PREVIEW_EXTENSIONS = {'.json', '.txt', '.md', '.markdown', '.csv', '.log'}
+INLINE_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.svg'}
+INLINE_PDF_EXTENSIONS = {'.pdf'}
+MAX_TEXT_PREVIEW_BYTES = 200_000
 
 
 def allowed_file(filename):
     """Check if file has allowed extension."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _resolve_report_file(report_id: str, filename: str) -> Path:
+    """Return a safe filesystem path for a generated report artefact."""
+
+    if Path(report_id).name != report_id or Path(filename).name != filename:
+        raise ValueError("Invalid path components supplied.")
+
+    base_reports = app.config['REPORTS_FOLDER'].resolve()
+    target_path = (base_reports / report_id / filename).resolve()
+
+    if not target_path.exists():
+        raise FileNotFoundError(filename)
+
+    if base_reports not in target_path.parents:
+        raise ValueError("Attempted access outside reports directory.")
+
+    return target_path
 
 
 @app.route('/')
@@ -229,10 +252,7 @@ def generate_report():
 def download_file(report_id, filename):
     """Download generated report file."""
     try:
-        filepath = app.config['REPORTS_FOLDER'] / report_id / filename
-
-        if not filepath.exists():
-            return jsonify({'error': 'File not found'}), 404
+        filepath = _resolve_report_file(report_id, filename)
 
         return send_file(
             str(filepath),
@@ -242,6 +262,62 @@ def download_file(report_id, filename):
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/preview/<report_id>/<filename>')
+def preview_file(report_id, filename):
+    """Provide inline previews for generated artefacts when possible."""
+
+    try:
+        filepath = _resolve_report_file(report_id, filename)
+    except FileNotFoundError:
+        return jsonify({'error': 'File not found'}), 404
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    extension = filepath.suffix.lower()
+
+    if extension in TEXT_PREVIEW_EXTENSIONS:
+        try:
+            file_size = filepath.stat().st_size
+            truncated = file_size > MAX_TEXT_PREVIEW_BYTES
+
+            if truncated:
+                with filepath.open('r', encoding='utf-8', errors='replace') as handle:
+                    content = handle.read(MAX_TEXT_PREVIEW_BYTES)
+                content = content.rstrip()
+                content += "\n\n[Preview truncated. File size exceeds preview limit.]\n"
+            else:
+                content = filepath.read_text(encoding='utf-8', errors='replace')
+
+            if extension == '.json' and not truncated:
+                try:
+                    parsed = json.loads(content)
+                    content = json.dumps(parsed, indent=2, ensure_ascii=False)
+                except json.JSONDecodeError:
+                    pass
+
+            return jsonify({
+                'success': True,
+                'report_id': report_id,
+                'filename': filename,
+                'extension': extension.lstrip('.'),
+                'content': content,
+                'truncated': truncated,
+            })
+        except OSError as exc:
+            return jsonify({'error': f'Failed to read file: {exc}'}), 500
+
+    if extension in INLINE_IMAGE_EXTENSIONS:
+        mimetype = None
+        if extension == '.svg':
+            mimetype = 'image/svg+xml'
+        return send_file(str(filepath), as_attachment=False, download_name=filename, mimetype=mimetype)
+
+    if extension in INLINE_PDF_EXTENSIONS:
+        return send_file(str(filepath), as_attachment=False, download_name=filename)
+
+    return jsonify({'error': 'Preview not supported for this file type.'}), 415
 
 
 @app.route('/health')

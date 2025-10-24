@@ -11,7 +11,7 @@
 # -------------------------------------------------------------------------------
 
 from collections import Counter, defaultdict
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, DefaultDict
 from datetime import datetime
 
 
@@ -26,7 +26,7 @@ class SpiderFootAnalyzer:
             data: List of SpiderFoot records (from CSV import)
         """
         self.data = data
-        self.analysis_results = {}
+        self.analysis_results: Dict[str, Any] = {}
 
     def _normalize_record(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """Return a trimmed, presentation-friendly view of a SpiderFoot record."""
@@ -107,8 +107,8 @@ class SpiderFootAnalyzer:
             }
 
         # Extract and analyze corruption keywords
-        keywords = []
-        patterns = defaultdict(int)
+        keywords: List[str] = []
+        patterns: DefaultDict[str, int] = defaultdict(int)
 
         for row in corruption_data:
             data_field = row.get('Data', '')
@@ -144,8 +144,8 @@ class SpiderFootAnalyzer:
             }
 
         # Extract and analyze TOC keywords
-        keywords = []
-        patterns = defaultdict(int)
+        keywords: List[str] = []
+        patterns: DefaultDict[str, int] = defaultdict(int)
 
         for row in toc_data:
             data_field = row.get('Data', '')
@@ -180,7 +180,7 @@ class SpiderFootAnalyzer:
                        if row.get('Type') == 'HIGH_RISK_DOMAIN']
 
         domains = []
-        risk_reasons = defaultdict(int)
+        risk_reasons: DefaultDict[str, int] = defaultdict(int)
         domain_details: Dict[str, Dict[str, Any]] = {}
         records: List[Dict[str, Any]] = []
 
@@ -251,7 +251,7 @@ class SpiderFootAnalyzer:
         compromised = [row for row in self.data
                       if row.get('Type') in ['COMPROMISED_ASSET', 'MALICIOUS_AFFILIATE']]
 
-        asset_types = defaultdict(int)
+        asset_types: DefaultDict[str, int] = defaultdict(int)
         sources = []
         asset_details: Dict[str, Dict[str, Any]] = {}
         records: List[Dict[str, Any]] = []
@@ -261,7 +261,8 @@ class SpiderFootAnalyzer:
             sources.append(row.get('Source', ''))
             records.append(self._normalize_record(row))
 
-            asset_label = row.get('Data') or row.get('Source') or row.get('Type')
+            asset_label_candidate = row.get('Data') or row.get('Source') or row.get('Type')
+            asset_label: str = asset_label_candidate if isinstance(asset_label_candidate, str) and asset_label_candidate else 'UNKNOWN_ASSET'
             detail = asset_details.setdefault(
                 asset_label,
                 {
@@ -320,7 +321,7 @@ class SpiderFootAnalyzer:
                 'message': 'No timestamp data available'
             }
 
-        timeline = defaultdict(int)
+        timeline: DefaultDict[str, int] = defaultdict(int)
 
         for row in self.data:
             timestamp = row.get('Time') or row.get('Timestamp')
@@ -346,7 +347,7 @@ class SpiderFootAnalyzer:
         Returns:
             Dictionary with complete analysis results
         """
-        results = {
+        results: Dict[str, Any] = {
             'summary': {
                 'total_records': len(self.data),
                 'analysis_timestamp': datetime.now().isoformat()
@@ -359,10 +360,20 @@ class SpiderFootAnalyzer:
             'compromised_assets': self.analyze_compromised_assets(),
             'timeline': self.generate_timeline()
         }
-        source_files = {row.get('__source_file') for row in self.data if row.get('__source_file')}
+        source_files = {
+            file_name
+            for row in self.data
+            for file_name in [row.get('__source_file')]
+            if isinstance(file_name, str) and file_name
+        }
         if source_files:
             results['summary']['source_filename'] = ', '.join(sorted(source_files))
-        source_paths = {row.get('__source_path') for row in self.data if row.get('__source_path')}
+        source_paths = {
+            path
+            for row in self.data
+            for path in [row.get('__source_path')]
+            if isinstance(path, str) and path
+        }
         if source_paths:
             results['summary']['source_paths'] = list(sorted(source_paths))
         results['pivots_and_leads'] = self.identify_pivots_and_leads(results)

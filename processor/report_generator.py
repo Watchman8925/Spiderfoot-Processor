@@ -605,9 +605,9 @@ class ReportGenerator:
                 if report_mode == "intelligence"
                 else f"narrative_expose_{timestamp}.pdf"
             )
-            output_path = self.output_dir / filename
+            path_obj = self.output_dir / filename
         else:
-            output_path = Path(output_path)
+            path_obj = Path(output_path)
 
         # Attempt to prepare AI narrative (non-blocking on failure)
         llm_report = self._maybe_generate_llm_report()
@@ -618,7 +618,7 @@ class ReportGenerator:
         else:
             chart_paths = self.charts if self.charts else self.generate_all_charts()
 
-        doc = SimpleDocTemplate(str(output_path), pagesize=letter)
+        doc = SimpleDocTemplate(str(path_obj), pagesize=letter)
         styles = getSampleStyleSheet()
 
         title_style = ParagraphStyle(
@@ -681,7 +681,7 @@ class ReportGenerator:
             )
 
         doc.build(story)
-        return str(output_path)
+        return str(path_obj)
 
     def _build_intelligence_story(
         self,

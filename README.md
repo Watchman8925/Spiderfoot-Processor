@@ -171,6 +171,9 @@ Set these environment variables before launching the web app or CLI if you want 
 - `SPIDERFOOT_LLM_USER_INSTRUCTIONS` (or `_FILE`) to prepend extra guidance before the JSON payload
 - `SPIDERFOOT_LLM_FALLBACK_MODEL` (with optional `_FALLBACK_SYSTEM_PROMPT`) to specify a backup model if the primary fails
 - `SPIDERFOOT_LLM_MAX_SAMPLE_RECORDS` to control how many raw records are shared with the model (default 50)
+- `SPIDERFOOT_LLM_TIMEOUT` to cap each provider call in seconds (default 30; set ≤0 to disable)
+- `SPIDERFOOT_LLM_MAX_RETRIES` to tune how many automatic retries occur after transient failures (default 2)
+- `SPIDERFOOT_LLM_REDACT_FIELDS` to drop comma-separated keys from the payload before transmission (defaults include `raw` and `__source_path`)
 
 The processor automatically passes a trimmed snapshot of the uploaded CSV along with key analysis results to the model you configure. A forensic intelligence prompt is preloaded by default; you can override it via the variables above. When no API credentials are provided (or the remote call fails), the system falls back to an embedded narrative engine that still produces provenance-backed reports—so AI output is available even in fully offline environments.
 

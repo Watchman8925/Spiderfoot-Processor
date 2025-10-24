@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import importlib
+import time
 
 _litellm = None
 completion = None
@@ -71,6 +72,9 @@ class LLMReportConfig:
     fallback_model: Optional[str] = None
     fallback_system_prompt: Optional[str] = None
     max_sample_records: int = 50
+    request_timeout: Optional[float] = 30.0
+    max_retries: int = 2
+    redact_fields: List[str] = field(default_factory=list)
 
     @classmethod
     def from_environment(cls) -> "LLMReportConfig":
@@ -128,6 +132,35 @@ class LLMReportConfig:
         else:
             max_sample_records = 50
 
+        timeout_env = os.getenv("SPIDERFOOT_LLM_TIMEOUT") or os.getenv("LLM_TIMEOUT")
+        request_timeout: Optional[float]
+        if timeout_env:
+            try:
+                request_timeout = float(timeout_env)
+                if request_timeout <= 0:
+                    request_timeout = None
+            except ValueError as exc:
+                raise LLMReportError("LLM timeout must be numeric.") from exc
+        else:
+            request_timeout = 30.0
+
+        retries_env = os.getenv("SPIDERFOOT_LLM_MAX_RETRIES") or os.getenv("LLM_MAX_RETRIES")
+        max_retries = 2
+        if retries_env:
+            try:
+                parsed_retries = int(retries_env)
+            except ValueError as exc:
+                raise LLMReportError("LLM retry count must be an integer.") from exc
+            if parsed_retries < 0:
+                parsed_retries = 0
+            max_retries = parsed_retries
+
+        redact_fields_env = os.getenv("SPIDERFOOT_LLM_REDACT_FIELDS") or ""
+        redact_fields = [field.strip() for field in redact_fields_env.split(",") if field.strip()]
+
+        default_redactions = {"raw", "__source_path"}
+        redact_fields = sorted(default_redactions.union(redact_fields))
+
         return cls(
             model=model,
             api_key=api_key,
@@ -142,6 +175,9 @@ class LLMReportConfig:
             fallback_model=fallback_model or None,
             fallback_system_prompt=fallback_system_prompt,
             max_sample_records=max_sample_records,
+            request_timeout=request_timeout,
+            max_retries=max_retries,
+            redact_fields=redact_fields,
         )
 
     @staticmethod
@@ -270,10 +306,11 @@ class LLMReportBuilder(BaseReportBuilder):
 
     def __init__(self, config: LLMReportConfig):
         self.config = config
-        if completion is None:  # pragma: no cover - depends on optional deps
+        if completion is None or not callable(completion):  # pragma: no cover - depends on optional deps
             raise LLMReportError(
-                "litellm is not installed. Install it or disable LLM reporting."
+                "litellm is not installed or does not expose completion(). Install it or disable LLM reporting."
             )
+        self._completion_fn = completion
 
     @classmethod
     def from_environment(cls) -> "LLMReportBuilder":
@@ -319,6 +356,10 @@ class LLMReportBuilder(BaseReportBuilder):
         sample_records = sample_records or []
         trimmed_records = sample_records[: self.config.max_sample_records]
 
+        snapshot = self._shrink_analysis(analysis_data)
+        sanitized_snapshot = self._redact_sensitive_data(snapshot)
+        sanitized_records = self._sanitize_sample_records(trimmed_records)
+
         return {
             "generation_directives": {
                 "target_sections": target_sections,
@@ -334,8 +375,8 @@ class LLMReportBuilder(BaseReportBuilder):
                 "include_structured_json": True,
                 "explain_significance": True,
             },
-            "analysis_snapshot": self._shrink_analysis(analysis_data),
-            "sample_records": trimmed_records,
+            "analysis_snapshot": sanitized_snapshot,
+            "sample_records": sanitized_records,
         }
 
     def _shrink_analysis(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -396,6 +437,33 @@ class LLMReportBuilder(BaseReportBuilder):
             }
         return snapshot
 
+    def _sanitize_sample_records(self, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Redact user-specified fields from sample records before transmission."""
+        sanitized: List[Dict[str, Any]] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            cleaned = {}
+            for key, value in record.items():
+                if key in self.config.redact_fields:
+                    continue
+                cleaned[key] = self._redact_sensitive_data(value)
+            sanitized.append(cleaned)
+        return sanitized
+
+    def _redact_sensitive_data(self, payload: Any) -> Any:
+        """Recursively remove configured sensitive fields from dictionaries."""
+        if isinstance(payload, dict):
+            filtered: Dict[str, Any] = {}
+            for key, value in payload.items():
+                if key in self.config.redact_fields:
+                    continue
+                filtered[key] = self._redact_sensitive_data(value)
+            return filtered
+        if isinstance(payload, list):
+            return [self._redact_sensitive_data(item) for item in payload]
+        return payload
+
     def _invoke_llm(
         self,
         payload: Dict[str, Any],
@@ -441,10 +509,25 @@ class LLMReportBuilder(BaseReportBuilder):
         if self.config.top_p is not None:
             kwargs["top_p"] = self.config.top_p
 
-        try:
-            raw_response = completion(**kwargs)
-        except Exception as exc:  # pragma: no cover - network dependent
-            raise LLMReportError(f"LLM request failed: {exc}") from exc
+        if self.config.request_timeout:
+            kwargs.setdefault("timeout", self.config.request_timeout)
+
+        attempts = self.config.max_retries + 1
+        raw_response: Optional[Any] = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                raw_response = self._completion_fn(**kwargs)
+                break
+            except Exception as exc:  # pragma: no cover - network dependent
+                if attempt >= attempts:
+                    raise LLMReportError(f"LLM request failed after {attempt} attempt(s): {exc}") from exc
+                time.sleep(min(2 ** attempt, 5))
+        else:
+            raise LLMReportError("LLM request failed with unknown error")
+
+        if raw_response is None:
+            raise LLMReportError("LLM provider returned no data")
 
         content = self._extract_content(raw_response)
         return content, self._normalize_raw_response(raw_response)

@@ -1,6 +1,9 @@
 // SpiderFoot TOC/Corruption Analyzer - JavaScript
 
 const RECORD_RENDER_LIMIT = 1000;
+const TEXT_PREVIEW_EXTENSIONS = new Set(['json', 'txt', 'md', 'markdown', 'csv', 'log']);
+const MEDIA_PREVIEW_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg']);
+const PDF_PREVIEW_EXTENSIONS = new Set(['pdf']);
 
 let currentFilename = null;
 let currentAnalysis = null;
@@ -11,6 +14,7 @@ let currentWebResearch = null;
 document.addEventListener('DOMContentLoaded', () => {
     setupUploadZone();
     setupFileInput();
+    setupPreviewModal();
 });
 
 // Setup drag-and-drop upload zone
@@ -44,6 +48,25 @@ function setupFileInput() {
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             handleFileUpload(e.target.files[0]);
+        }
+    });
+}
+
+function setupPreviewModal() {
+    const modal = document.getElementById('previewModal');
+    if (!modal) {
+        return;
+    }
+
+    modal.addEventListener('click', (event) => {
+        if (event.target.classList.contains('preview-modal__overlay')) {
+            closePreviewModal();
+        }
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && modal.classList.contains('active')) {
+            closePreviewModal();
         }
     });
 }
@@ -1041,18 +1064,56 @@ function displayDownloads(reportId, files) {
 function addDownloadItem(container, reportId, filename, fileInfo) {
     const item = document.createElement('div');
     item.className = 'download-item';
-    item.innerHTML = `
-        <div class="download-info">
-            <i class="fas ${fileInfo.icon}" style="color: ${fileInfo.color}"></i>
-            <div>
-                <div style="font-weight: 600;">${filename}</div>
-                <div style="font-size: 0.9rem; color: var(--text-secondary);">${fileInfo.label}</div>
-            </div>
+
+    const info = document.createElement('div');
+    info.className = 'download-info';
+
+    const safeFilename = escapeHtml(filename);
+    const safeLabel = escapeHtml(fileInfo.label);
+    info.innerHTML = `
+        <i class="fas ${fileInfo.icon}" style="color: ${fileInfo.color}"></i>
+        <div>
+            <div style="font-weight: 600;">${safeFilename}</div>
+            <div style="font-size: 0.9rem; color: var(--text-secondary);">${safeLabel}</div>
         </div>
-        <a href="/download/${reportId}/${filename}" class="btn btn-primary" download>
-            <i class="fas fa-download"></i> Download
-        </a>
     `;
+
+    const actions = document.createElement('div');
+    actions.className = 'download-actions';
+
+    const encodedReportId = encodeURIComponent(reportId);
+    const encodedFilename = encodeURIComponent(filename);
+    const downloadLink = document.createElement('a');
+    downloadLink.href = `/download/${encodedReportId}/${encodedFilename}`;
+    downloadLink.className = 'btn btn-primary btn-sm';
+    downloadLink.setAttribute('download', '');
+    downloadLink.innerHTML = '<i class="fas fa-download"></i> Download';
+    actions.appendChild(downloadLink);
+
+    const extension = (filename.split('.').pop() || '').toLowerCase();
+    const isTextPreview = TEXT_PREVIEW_EXTENSIONS.has(extension);
+    const isMediaPreview = MEDIA_PREVIEW_EXTENSIONS.has(extension);
+    const isPdfPreview = PDF_PREVIEW_EXTENSIONS.has(extension);
+
+    if (isTextPreview || isMediaPreview || isPdfPreview) {
+        const viewButton = document.createElement('button');
+        viewButton.type = 'button';
+        viewButton.className = 'btn btn-secondary btn-sm';
+        viewButton.innerHTML = '<i class="fas fa-eye"></i> View';
+        viewButton.addEventListener('click', () => {
+            if (isTextPreview) {
+                previewTextFile(reportId, filename);
+            } else if (isPdfPreview) {
+                previewPdfFile(reportId, filename);
+            } else {
+                previewImageFile(reportId, filename);
+            }
+        });
+        actions.appendChild(viewButton);
+    }
+
+    item.appendChild(info);
+    item.appendChild(actions);
     container.appendChild(item);
 }
 
@@ -1112,6 +1173,129 @@ function showProgress(percent) {
     document.getElementById('uploadProgress').style.display = 'block';
     document.getElementById('progressFill').style.width = percent + '%';
     document.getElementById('progressText').textContent = `Uploading... ${percent}%`;
+}
+
+function previewTextFile(reportId, filename) {
+    const encodedReportId = encodeURIComponent(reportId);
+    const encodedFilename = encodeURIComponent(filename);
+    showPreviewModal(filename);
+    setPreviewBody('<p class="preview-loading"><i class="fas fa-spinner fa-spin"></i> Loading preview…</p>');
+
+    fetch(`/preview/${encodedReportId}/${encodedFilename}`)
+        .then(async (response) => {
+            const data = await response.json().catch(() => ({ error: 'Invalid preview response.' }));
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'Unable to load preview');
+            }
+
+            const container = document.createElement('div');
+            container.className = 'preview-text-wrapper';
+
+            const pre = document.createElement('pre');
+            pre.className = 'preview-text';
+            pre.textContent = data.content || '';
+            container.appendChild(pre);
+
+            if (data.truncated) {
+                const note = document.createElement('p');
+                note.className = 'preview-note';
+                note.textContent = 'Preview truncated. Download the file to view full contents.';
+                container.appendChild(note);
+            }
+
+            setPreviewBody(container);
+        })
+        .catch((error) => {
+            closePreviewModal();
+            showToast(`Preview unavailable: ${error.message}`, 'error');
+        });
+}
+
+function previewImageFile(reportId, filename) {
+    const encodedReportId = encodeURIComponent(reportId);
+    const encodedFilename = encodeURIComponent(filename);
+    const url = `/preview/${encodedReportId}/${encodedFilename}`;
+
+    showPreviewModal(filename);
+
+    const img = document.createElement('img');
+    img.className = 'preview-image';
+    img.src = url;
+    img.alt = filename;
+    img.loading = 'lazy';
+    img.addEventListener('error', () => {
+        setPreviewBody('<p class="preview-error">Unable to render image preview. Please download the file instead.</p>');
+    });
+
+    setPreviewBody(img);
+}
+
+function previewPdfFile(reportId, filename) {
+    const encodedReportId = encodeURIComponent(reportId);
+    const encodedFilename = encodeURIComponent(filename);
+    const url = `/preview/${encodedReportId}/${encodedFilename}`;
+
+    showPreviewModal(filename);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'preview-pdf-wrapper';
+
+    const frame = document.createElement('iframe');
+    frame.className = 'preview-frame';
+    frame.src = url;
+    frame.title = filename;
+    frame.setAttribute('loading', 'lazy');
+    wrapper.appendChild(frame);
+
+    const fallback = document.createElement('p');
+    fallback.className = 'preview-note';
+    fallback.innerHTML = `If the PDF does not display, <a href="/download/${encodedReportId}/${encodedFilename}" target="_blank" rel="noopener">download it directly</a>.`;
+    wrapper.appendChild(fallback);
+
+    setPreviewBody(wrapper);
+}
+
+function showPreviewModal(title) {
+    const modal = document.getElementById('previewModal');
+    if (!modal) {
+        return;
+    }
+
+    document.getElementById('previewTitle').textContent = title;
+    setPreviewBody('');
+    modal.classList.add('active');
+    modal.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+}
+
+function setPreviewBody(content) {
+    const body = document.getElementById('previewBody');
+    if (!body) {
+        return;
+    }
+
+    body.innerHTML = '';
+    if (typeof content === 'string') {
+        body.innerHTML = content;
+    } else if (content instanceof Node) {
+        body.appendChild(content);
+    }
+}
+
+function closePreviewModal() {
+    const modal = document.getElementById('previewModal');
+    if (!modal) {
+        return;
+    }
+
+    modal.classList.remove('active');
+    modal.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('modal-open');
+
+    const body = document.getElementById('previewBody');
+    if (body) {
+        body.innerHTML = '';
+    }
 }
 
 // Show toast notification
