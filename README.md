@@ -26,6 +26,7 @@ This plugin pack extends SpiderFoot's OSINT capabilities to identify potential c
 - **Visualization**: Generate charts and graphs for better insights
 - **PDF Reports**: Create professional intelligence and narrative exposé PDFs with findings, provenance, and recommendations
 - **Filtering & Search**: Filter by event types, modules, or search for specific keywords
+- **Entity Graph Intelligence**: Automatically build co-occurrence networks between domains, IPs, and email addresses to reveal shared infrastructure
 
 ## Quick Start
 
@@ -167,6 +168,7 @@ The processor will generate:
 - **Charts**: Visual representations of event distribution, module activity, and threat overview
 - **PDF Report**: Comprehensive report with executive summary, visualizations, detailed findings, and recommendations
 - **JSON Export**: Machine-readable analysis results (optional with `--json` flag)
+- **Entity Graph Summary**: Connected components, top co-occurring pairs, and per-entity context for faster pivoting
 
 ## AI-Assisted Reporting
 
@@ -198,6 +200,17 @@ Some investigations benefit from quick open-source context on high-priority find
   - `SPIDERFOOT_WEB_SEARCH_USER_AGENT` (custom user-agent string)
 
 ⚠️ This feature is off by default to preserve offline operation. When enabled it requires outbound HTTPS access and adheres to the configured throttling limits to avoid hammering remote services.
+
+### Entity Co-Occurrence Intelligence
+
+Every analysis run now produces an entity graph that surfaces how domains, IP addresses, and email identities intersect across the imported dataset:
+
+- **Automated extraction** of domains, IPv4 indicators, and email accounts from raw SpiderFoot records
+- **Co-occurrence scoring** that ranks the strongest infrastructure overlaps and shared campaign artefacts
+- **Cluster detection** to reveal connected components, helping focus investigations on related assets
+- **Pivot-ready evidence** captured per entity (modules, first-party sources, and sample events) so analysts can rapidly corroborate findings
+
+The graph output is available through the CLI/JSON export, the generated PDF narrative, and the web experience. UI surfacing is underway—until then you can inspect the structured graph details in the downloadable analysis bundle.
 
 ### Event Types Processed
 

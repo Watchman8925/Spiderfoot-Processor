@@ -11,8 +11,9 @@
 # -------------------------------------------------------------------------------
 
 import re
-from collections import Counter, defaultdict
-from typing import Any, DefaultDict, Dict, List, Optional, Set
+from collections import Counter, defaultdict, deque
+from itertools import combinations
+from typing import Any, DefaultDict, Dict, List, Optional, Set, Tuple
 from datetime import datetime
 
 
@@ -72,6 +73,12 @@ TOC_KEYWORDS = [
     'attack',
 ]
 
+DOMAIN_PATTERN = re.compile(r"\b(?:[A-Za-z0-9-]{1,63}\.)+[A-Za-z]{2,63}\b")
+IP_PATTERN = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}\b")
+MAX_ENTITY_SAMPLE_EVENTS = 5
+MAX_CLUSTER_SIZE = 25
+
 
 class SpiderFootAnalyzer:
     """Analyze SpiderFoot data for patterns, trends, and insights."""
@@ -117,10 +124,10 @@ class SpiderFootAnalyzer:
                 parts.extend(self._stringify_value(item))
             return parts
         if isinstance(value, dict):
-            parts: List[str] = []
+            dict_parts: List[str] = []
             for item in value.values():
-                parts.extend(self._stringify_value(item))
-            return parts
+                dict_parts.extend(self._stringify_value(item))
+            return dict_parts
         return []
 
     def _collect_row_text(self, row: Dict[str, Any]) -> str:
@@ -161,6 +168,31 @@ class SpiderFootAnalyzer:
                 if re.search(rf"\b{re.escape(candidate)}\b", lowered):
                     matches.add(keyword)
         return matches
+
+    def _extract_entities_from_text(self, text: str) -> Set[str]:
+        if not isinstance(text, str) or not text:
+            return set()
+        entities: Set[str] = set()
+        entities.update(DOMAIN_PATTERN.findall(text))
+        entities.update(IP_PATTERN.findall(text))
+        entities.update(EMAIL_PATTERN.findall(text))
+        return entities
+
+    def _extract_entities_from_row(self, row: Dict[str, Any]) -> Set[str]:
+        entities: Set[str] = set()
+        entities.update(self._extract_entities_from_text(row.get('Data', '')))
+        entities.update(self._extract_entities_from_text(row.get('Source', '')))
+        entities.update(self._extract_entities_from_text(self._collect_row_text(row)))
+        return entities
+
+    def _classify_entity(self, entity: str) -> str:
+        if '@' in entity:
+            return 'email'
+        if IP_PATTERN.fullmatch(entity or ''):
+            return 'ip'
+        if DOMAIN_PATTERN.fullmatch(entity or ''):
+            return 'domain'
+        return 'unknown'
 
     def _detect_keyword_matches(
         self,
@@ -249,12 +281,10 @@ class SpiderFootAnalyzer:
         keyword_counter: Counter[str] = Counter()
         patterns: DefaultDict[str, int] = defaultdict(int)
         events: List[Dict[str, Any]] = []
-        detection_summary = {
-            'plugin_events': 0,
-            'keyword_matches': 0,
-            'other_matches': 0,
-            'notes': []
-        }
+        summary_notes: List[str] = []
+        plugin_events = 0
+        keyword_matches = 0
+        other_matches = 0
         seen_ids: Set[int] = set()
 
         for row in corruption_rows:
@@ -277,7 +307,7 @@ class SpiderFootAnalyzer:
 
             events.append(record)
 
-        detection_summary['plugin_events'] = len(events)
+        plugin_events = len(events)
 
         heuristic_events = self._detect_keyword_matches(
             self.data,
@@ -292,23 +322,30 @@ class SpiderFootAnalyzer:
                 patterns[keyword] += 1
 
         if heuristic_events:
-            detection_summary['keyword_matches'] = len(heuristic_events)
-            detection_summary['notes'].append(
+            keyword_matches = len(heuristic_events)
+            summary_notes.append(
                 "Keyword heuristics surfaced potential corruption-related records that were not explicitly flagged."
             )
 
         total_indicators = len(events)
 
-        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] > 0:
-            detection_summary['notes'].append(
+        if plugin_events == 0 and keyword_matches > 0:
+            summary_notes.append(
                 "No explicit CORRUPTION_INDICATOR events were present; results rely on keyword heuristics."
             )
-        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] == 0 and total_indicators == 0:
-            detection_summary['notes'].append(
+        if plugin_events == 0 and keyword_matches == 0 and total_indicators == 0:
+            summary_notes.append(
                 "No corruption indicators were discovered in the dataset."
             )
 
         events.extend(heuristic_events)
+
+        detection_summary = {
+            'plugin_events': plugin_events,
+            'keyword_matches': keyword_matches,
+            'other_matches': other_matches,
+            'notes': summary_notes,
+        }
 
         return {
             'total_indicators': len(events),
@@ -320,6 +357,185 @@ class SpiderFootAnalyzer:
             'patterns': dict(patterns),
             'keywords_found': list(keyword_counter.elements()),
         }
+
+    def analyze_entity_graph(self) -> Dict[str, Any]:
+        """Build relationships between domains, IPs, and emails observed in the dataset."""
+
+        entity_stats: Dict[str, Dict[str, Any]] = {}
+        pair_counts: Counter[Tuple[str, str]] = Counter()
+        total_records_with_entities = 0
+
+        for row in self.data:
+            entities = sorted(self._extract_entities_from_row(row))
+            if not entities:
+                continue
+
+            total_records_with_entities += 1
+            record = self._normalize_record(row)
+
+            for entity in entities:
+                stats = entity_stats.setdefault(
+                    entity,
+                    {
+                        'type': self._classify_entity(entity),
+                        'occurrences': 0,
+                        'modules': set(),
+                        'sources': set(),
+                        'related': defaultdict(int),
+                        'samples': [],
+                    },
+                )
+                stats['occurrences'] += 1
+                if record['module']:
+                    stats['modules'].add(record['module'])
+                if record['source']:
+                    stats['sources'].add(record['source'])
+                if len(stats['samples']) < MAX_ENTITY_SAMPLE_EVENTS:
+                    stats['samples'].append(record)
+
+            for left, right in combinations(entities, 2):
+                left_entity, right_entity = sorted((left, right))
+                pair: Tuple[str, str] = (left_entity, right_entity)
+                pair_counts[pair] += 1
+                entity_stats[left]['related'][right] += 1
+                entity_stats[right]['related'][left] += 1
+
+        if not entity_stats:
+            return {
+                'total_entities': 0,
+                'records_with_entities': 0,
+                'top_entities': [],
+                'top_pairs': [],
+                'clusters': [],
+                'entity_map': {},
+                'type_breakdown': {},
+                'notes': ['No domains, IPs, or email addresses were detected in the uploaded dataset.'],
+            }
+
+        def _sorted_related(related: Dict[str, int]) -> List[Dict[str, Any]]:
+            return [
+                {
+                    'entity': other,
+                    'count': count,
+                }
+                for other, count in sorted(related.items(), key=lambda item: item[1], reverse=True)
+            ]
+
+        entity_map: Dict[str, Dict[str, Any]] = {}
+        type_counter: Counter[str] = Counter()
+        orphan_entities = 0
+
+        for entity, stats in entity_stats.items():
+            related = stats['related']
+            type_counter[stats['type']] += 1
+            if not related:
+                orphan_entities += 1
+
+            entity_map[entity] = {
+                'type': stats['type'],
+                'occurrences': stats['occurrences'],
+                'modules': sorted(stats['modules']),
+                'sources': sorted(stats['sources']),
+                'related': _sorted_related(related),
+                'samples': stats['samples'],
+                'degree': len(related),
+            }
+
+        top_entities = [
+            {
+                'entity': entity,
+                'type': data['type'],
+                'occurrences': data['occurrences'],
+                'degree': data['degree'],
+                'modules': data['modules'],
+            }
+            for entity, data in sorted(
+                entity_map.items(),
+                key=lambda item: (item[1]['occurrences'], item[1]['degree']),
+                reverse=True,
+            )[:15]
+        ]
+
+        top_pairs = []
+        for (left, right), count in pair_counts.most_common(20):
+            left_modules = set(entity_map[left]['modules'])
+            right_modules = set(entity_map[right]['modules'])
+            shared_modules = sorted(left_modules.intersection(right_modules))
+            top_pairs.append(
+                {
+                    'entities': [left, right],
+                    'count': count,
+                    'shared_modules': shared_modules,
+                }
+            )
+
+        clusters = self._build_entity_clusters(entity_stats)
+
+        notes: List[str] = []
+        if orphan_entities:
+            notes.append(
+                f"{orphan_entities} entity(ies) were observed only once without any linked peers."
+            )
+        if not pair_counts:
+            notes.append("No co-occurring entity pairs were identified across the dataset.")
+
+        return {
+            'total_entities': len(entity_stats),
+            'records_with_entities': total_records_with_entities,
+            'top_entities': top_entities,
+            'top_pairs': top_pairs,
+            'clusters': clusters,
+            'entity_map': entity_map,
+            'type_breakdown': dict(type_counter),
+            'notes': notes,
+        }
+
+    def _build_entity_clusters(self, entity_stats: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not entity_stats:
+            return []
+
+        adjacency: Dict[str, Set[str]] = {
+            entity: set(stats['related'].keys())
+            for entity, stats in entity_stats.items()
+        }
+
+        visited: Set[str] = set()
+        clusters: List[Dict[str, Any]] = []
+
+        for entity in adjacency:
+            if entity in visited:
+                continue
+
+            queue: deque[str] = deque([entity])
+            component: List[str] = []
+            total_occurrences = 0
+
+            while queue:
+                current = queue.popleft()
+                if current in visited:
+                    continue
+                visited.add(current)
+                component.append(current)
+                total_occurrences += entity_stats[current]['occurrences']
+                for neighbour in adjacency[current]:
+                    if neighbour not in visited:
+                        queue.append(neighbour)
+
+            component_sorted = sorted(
+                component,
+                key=lambda node: entity_stats[node]['occurrences'],
+                reverse=True,
+            )
+            clusters.append(
+                {
+                    'size': len(component),
+                    'total_occurrences': total_occurrences,
+                    'entities': component_sorted[:MAX_CLUSTER_SIZE],
+                }
+            )
+
+        clusters.sort(key=lambda item: (item['size'], item['total_occurrences']), reverse=True)
+        return clusters[:10]
 
     def analyze_toc_patterns(self) -> Dict[str, Any]:
         """
@@ -333,12 +549,10 @@ class SpiderFootAnalyzer:
         keyword_counter: Counter[str] = Counter()
         patterns: DefaultDict[str, int] = defaultdict(int)
         events: List[Dict[str, Any]] = []
-        detection_summary = {
-            'plugin_events': 0,
-            'keyword_matches': 0,
-            'other_matches': 0,
-            'notes': []
-        }
+        summary_notes: List[str] = []
+        plugin_events = 0
+        keyword_matches = 0
+        other_matches = 0
         seen_ids: Set[int] = set()
 
         for row in toc_rows:
@@ -371,7 +585,7 @@ class SpiderFootAnalyzer:
 
             events.append(record)
 
-        detection_summary['plugin_events'] = len(events)
+        plugin_events = len(events)
 
         heuristic_events = self._detect_keyword_matches(
             self.data,
@@ -386,20 +600,20 @@ class SpiderFootAnalyzer:
                 patterns[keyword] += 1
 
         if heuristic_events:
-            detection_summary['keyword_matches'] = len(heuristic_events)
-            detection_summary['notes'].append(
+            keyword_matches = len(heuristic_events)
+            summary_notes.append(
                 "Keyword heuristics identified potential threat-of-compromise signals beyond explicit plugin findings."
             )
 
         total_indicators = len(events)
 
-        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] > 0:
-            detection_summary['notes'].append(
+        if plugin_events == 0 and keyword_matches > 0:
+            summary_notes.append(
                 "No explicit TOC_INDICATOR events were present; results rely on keyword heuristics."
             )
 
-        if detection_summary['plugin_events'] == 0 and detection_summary['keyword_matches'] == 0 and total_indicators == 0:
-            detection_summary['notes'].append(
+        if plugin_events == 0 and keyword_matches == 0 and total_indicators == 0:
+            summary_notes.append(
                 "No threat-of-compromise indicators were discovered in the dataset."
             )
 
@@ -408,13 +622,20 @@ class SpiderFootAnalyzer:
             for label in ('suspicious_pattern', 'suspicious_tld', 'phishing_term'):
                 if label in patterns:
                     context_notes.append(f"{label.replace('_', ' ').title()} ({patterns[label]})")
-                    detection_summary['other_matches'] += patterns[label]
+                    other_matches += patterns[label]
             if context_notes:
-                detection_summary['notes'].append(
+                summary_notes.append(
                     "Additional heuristic signals: " + ', '.join(context_notes)
                 )
 
         events.extend(heuristic_events)
+
+        detection_summary = {
+            'plugin_events': plugin_events,
+            'keyword_matches': keyword_matches,
+            'other_matches': other_matches,
+            'notes': summary_notes,
+        }
 
         return {
             'total_indicators': len(events),
@@ -616,6 +837,7 @@ class SpiderFootAnalyzer:
             'toc_patterns': self.analyze_toc_patterns(),
             'risk_domains': self.analyze_risk_domains(),
             'compromised_assets': self.analyze_compromised_assets(),
+            'entity_graph': self.analyze_entity_graph(),
             'timeline': self.generate_timeline()
         }
         source_files = {
@@ -651,6 +873,7 @@ class SpiderFootAnalyzer:
                 'risk_domains': self.analyze_risk_domains(),
                 'compromised_assets': self.analyze_compromised_assets(),
                 'module_activity': self.analyze_module_activity(),
+                'entity_graph': self.analyze_entity_graph(),
             }
 
         leads: List[Dict[str, Any]] = []
@@ -701,6 +924,56 @@ class SpiderFootAnalyzer:
                     'primary_reason': top_reason,
                 }
             })
+
+        # Infrastructure co-occurrence pivots
+        entity_graph = analysis.get('entity_graph', {}) or {}
+        entity_map = entity_graph.get('entity_map', {}) or {}
+        pair_limit = 0
+        for pair in entity_graph.get('top_pairs', []) or []:
+            if pair_limit >= 5:
+                break
+            count = pair.get('count', 0)
+            if count < 2:
+                continue
+            entities = pair.get('entities', []) or []
+            if len(entities) != 2:
+                continue
+            left, right = entities
+            left_meta = entity_map.get(left)
+            right_meta = entity_map.get(right)
+            if not left_meta or not right_meta:
+                continue
+
+            shared_modules = pair.get('shared_modules', []) or []
+            confidence = 'High' if count >= 3 else 'Medium'
+            rationale_parts = [
+                f"Observed together {count} time(s) across {len(shared_modules) or 'multiple'} module(s)"
+            ]
+            if shared_modules:
+                rationale_parts.append(f"notably {', '.join(shared_modules[:3])}")
+
+            leads.append({
+                'title': f"Linked Entities: {left} ↔ {right}",
+                'category': 'Infrastructure Cluster',
+                'indicator': f"{left}::{right}",
+                'confidence': confidence,
+                'summary': (
+                    f"Entities {left} and {right} co-occur in {count} record(s), indicating shared infrastructure or coordinated activity."
+                ),
+                'rationale': '; '.join(rationale_parts) + '.',
+                'recommended_actions': (
+                    'Map hosting/WHOIS relationships, broaden collection around linked assets, and monitor for campaign-scale operations.'
+                ),
+                'supporting_evidence': (
+                    (left_meta.get('samples', []) or []) + (right_meta.get('samples', []) or [])
+                )[:MAX_ENTITY_SAMPLE_EVENTS],
+                'metrics': {
+                    'pair_count': count,
+                    'left_degree': left_meta.get('degree'),
+                    'right_degree': right_meta.get('degree'),
+                }
+            })
+            pair_limit += 1
 
         # Compromised assets pivots
         compromised = analysis.get('compromised_assets', {})
